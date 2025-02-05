@@ -18,5 +18,6 @@ while True:
     else:
         time.sleep(5)
     
+os.system(f'kaggle kernels output {id} -p ./data/output')
     
 
