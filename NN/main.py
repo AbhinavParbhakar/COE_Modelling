@@ -9,6 +9,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler,OneHotEncoder
 from sklearn.mixture import GaussianMixture
 import numpy as np
+import matplotlib.pyplot as plt
 from numpy.random import permutation
 import os
 
@@ -59,6 +60,7 @@ def train(model:nn.Module,train_loader:DataLoader,val_loader:DataLoader)->None:
     
     optim = Adagrad(model.parameters(),lr=lr,weight_decay=l2)
     
+    val_scores = []
     with open('nn-results.txt','w') as file:
         for i in range(epochs):
             model.train()
@@ -86,8 +88,17 @@ def train(model:nn.Module,train_loader:DataLoader,val_loader:DataLoader)->None:
                         i += 1
                     
                     file.write(f'Validation MAE after epoch {i} is {val_score/i}\n')
+                    val_scores.append(val_score/i)
 
         file.close()
+        
+        epochs = [i + 1 for i in range(len(val_scores))]
+        plt.figure(figsize=(10,6))
+        plt.plot(epochs,val_scores)
+        plt.xlabel('Epoch (Every 200)')
+        plt.ylabel('MAE Score')
+        plt.title("Validation MAE Scores over Epochs")
+        plt.savefig('NN_mae_scores.png')
                     
 
 def preprocess_data(df:pd.DataFrame)->np.ndarray:

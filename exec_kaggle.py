@@ -27,6 +27,6 @@ def run_model(model_name="GNN"):
     os.system(f'kaggle kernels output {id} -p ./data/output')
     
 if __name__ == "__main__":
-    run_model(model_name="NN")
+    run_model(model_name="GNN")
     
 

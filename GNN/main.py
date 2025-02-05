@@ -30,6 +30,7 @@ from torch.optim import Adagrad
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import StandardScaler,OneHotEncoder
 from sklearn.mixture import GaussianMixture
+import matplotlib.pyplot as plt
 
 
 class GNN(nn.Module):
@@ -62,7 +63,7 @@ class GNN(nn.Module):
         
         return x
 
-def train(data:Data,lr=0.01,epochs=10000):
+def train(data:Data,lr=0.01,epochs=1000):
     """
     Train the GNN model on the trained data
     """
@@ -75,6 +76,8 @@ def train(data:Data,lr=0.01,epochs=10000):
     loss_fn = mse_loss
     
     model.train()
+    r2_scores = []
+    valid_scores = []
     with open('results.txt','w') as file:
         for i in range(epochs):
             model.train()
@@ -84,7 +87,7 @@ def train(data:Data,lr=0.01,epochs=10000):
             loss.backward()
             optim.step()
             
-            if i % 1000 == 0:
+            if i % 200 == 0:
                 with torch.no_grad():
                     output = model(data)
                     metric = R2Score()
@@ -93,11 +96,27 @@ def train(data:Data,lr=0.01,epochs=10000):
                     loss :torch.Tensor = mae(output[data.val_mask],data.y[data.val_mask])
                     loss = loss.item()
                     score = metric.compute().item()
+                    r2_scores.append(score)
+                    valid_scores.append(loss)
                     file.write(f'R_2 Score after epoch {i} is {score}\n')
                     file.write(f'MAE after epoch {i} is {loss}\n\n\n')
     
         file.close()
-                
+        x_values = [i for i in range(len(r2_scores))]
+        plt.figure(figsize=(10,6))
+        plt.plot(x_values,r2_scores)
+        plt.xlabel('Epoch (Every 200)')
+        plt.ylabel('r2 Scores')
+        plt.title("Validation r2 Scores over Epochs")
+        plt.savefig('GNN_r2_scores.png')
+        
+        
+        plt.figure(figsize=(10,6))
+        plt.plot(x_values,valid_scores)
+        plt.xlabel('Epoch (Every 200)')
+        plt.ylabel('MAE Scores')
+        plt.title("Validation MAE Scores over Epochs")
+        plt.savefig('GNN_mae_scores.png')     
         
     
 

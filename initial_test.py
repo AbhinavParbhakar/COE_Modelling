@@ -6,6 +6,7 @@ from sklearn.mixture import GaussianMixture
 from sklearn.metrics import r2_score
 import matplotlib.pyplot as plt
 import pandas as pd
+import numpy as np
 
 
 def svm(df:pd.DataFrame)->float:
@@ -44,6 +45,23 @@ def svm(df:pd.DataFrame)->float:
     # Evaluate
     return r2_score(y_test, pred)
 
+def create_graph(features:np.ndarray):
+    max_componenets = 30
+    scores = []
+    x = [i for i in range(1,max_componenets)]
+    for n_comp in x:
+        gm = GaussianMixture(n_components=n_comp,random_state=0)
+        gm.fit(features)
+        scores.append(gm.bic(features))
+        
+    plt.figure(figsize=(10,6))
+    plt.plot(x,scores)
+    plt.xlabel('Number of Clusters')
+    plt.ylabel('BIC')
+    plt.title("BIC (Lower the better) vs n_clusters")
+    plt.savefig('./data/output/bic.png')
+        
+
 def EM(df:pd.DataFrame)->pd.DataFrame:
     """
     Given the data frame, perform the EM algorithm using a gaussian mixture model approach
@@ -60,7 +78,7 @@ def EM(df:pd.DataFrame)->pd.DataFrame:
     ])
     
     x = transform.fit_transform(features)
-    
+    create_graph(x)
     gm = GaussianMixture(n_components=16,random_state=0)
     gm.fit(x)
     df['Cluster'] = pd.Series(gm.predict(x))
@@ -70,5 +88,4 @@ def EM(df:pd.DataFrame)->pd.DataFrame:
 if __name__ == '__main__':
     df = pd.read_excel('./data/excel_files/features1-31-2025.xlsx')
     cluster_df = EM(df)
-    score = svm(df=cluster_df)
-    print(score)
+
