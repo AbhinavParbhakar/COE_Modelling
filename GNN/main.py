@@ -22,7 +22,7 @@ import numpy as np
 
 from torch_geometric.data import Data
 from torch_geometric.transforms import RandomNodeSplit
-from torch_geometric.nn import GCNConv
+from torch_geometric.nn import GCNConv, GAT
 from torcheval.metrics import R2Score
 from torch import nn
 from torch.nn.functional import mse_loss
@@ -62,7 +62,7 @@ class GNN(nn.Module):
         
         return x
 
-def train(data:Data,lr=0.0001,epochs=1000):
+def train(data:Data,lr=0.01,epochs=10000):
     """
     Train the GNN model on the trained data
     """
@@ -84,13 +84,17 @@ def train(data:Data,lr=0.0001,epochs=1000):
             loss.backward()
             optim.step()
             
-            if i % 100 == 0:
+            if i % 1000 == 0:
                 with torch.no_grad():
                     output = model(data)
                     metric = R2Score()
+                    mae = nn.L1Loss()
                     metric.update(output[data.val_mask],data.y[data.val_mask])
+                    loss :torch.Tensor = mae(output[data.val_mask],data.y[data.val_mask])
+                    loss = loss.item()
                     score = metric.compute().item()
                     file.write(f'R_2 Score after epoch {i} is {score}\n')
+                    file.write(f'MAE after epoch {i} is {loss}\n\n\n')
     
         file.close()
                 
