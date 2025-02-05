@@ -14,12 +14,12 @@ def svm(df:pd.DataFrame)->float:
     """
     # Define target and features
     target = df['Volume']
-    features = df.drop(['Volume', 'UniqueID'], axis=1)
+    features = df.drop(['Volume', 'UniqueID',], axis=1)
 
     # Preprocessing
     transform = ColumnTransformer(transformers=[
         ('One Hot', OneHotEncoder(handle_unknown='ignore'), ["roadclass", "Land Usage"]),
-        ("Standard Scale", StandardScaler(), ['Speed (km/h)', 'Lat', 'Long'])
+        ("Standard Scale", StandardScaler(), ['Speed (km/h)','Lat','Long'])
     ])
 
     x = transform.fit_transform(features)

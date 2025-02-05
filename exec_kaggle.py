@@ -2,20 +2,21 @@ import os
 import time
 import json
 
-os.system("kaggle kernels push")
+metadata = json.load(open('./kernel-metadata.json'))
+id = metadata['id']
 
-kaggle_meta = json.load(open('./kernel-metadata.json'))
-kernel_id = kaggle_meta['id']
-
+os.system('kaggle kernels push')
 
 while True:
-    status = os.popen(f"kaggle kernels status {kernel_id}").read()
-    if "complete" in status:
-        print("Execution complete!")
+    result = os.popen(f'kaggle kernels status {id}').read().encode("utf-8", "ignore").decode("utf-8")
+    if "complete" in result:
+        print("complete")
         break
-    elif "error" in status:
-        print("Kernel encountered an error.")
+    elif "error" in result:
+        print("Error")
         break
-    time.sleep(30)
+    else:
+        time.sleep(5)
+    
+    
 
-os.system(f"kaggle kernels output {kernel_id} ./data/output")
