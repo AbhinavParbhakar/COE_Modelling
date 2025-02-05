@@ -35,8 +35,17 @@ from sklearn.mixture import GaussianMixture
 class GNN(nn.Module):
     def __init__(self,in_channels:int,hidden_num:int,output:int):
         super().__init__()
+        
+        print(hidden_num//4)
+        print(hidden_num//16)
+        print(hidden_num//64)
+        
+        
         self.l1 = GCNConv(in_channels=in_channels,out_channels=hidden_num)
-        self.l2 = GCNConv(in_channels=hidden_num,out_channels=output)
+        self.l2 = GCNConv(in_channels=hidden_num,out_channels=hidden_num//2)
+        self.l3 = GCNConv(in_channels=hidden_num//2,out_channels=hidden_num//4)
+        self.l4 = GCNConv(in_channels=hidden_num//4,out_channels=hidden_num//8)
+        self.l5 = GCNConv(in_channels=hidden_num//8,out_channels=output)
         self.relu = nn.ReLU()
     
     def forward(self,data:Data):
@@ -44,10 +53,16 @@ class GNN(nn.Module):
         x = self.l1(nodes,edges)
         x = self.relu(x)
         x = self.l2(x,edges)
+        x = self.relu(x)
+        x = self.l3(x,edges)
+        x = self.relu(x)
+        x = self.l4(x,edges)
+        x = self.relu(x)
+        x = self.l5(x,edges)
         
         return x
 
-def train(data:Data,lr=0.001,epochs=100):
+def train(data:Data,lr=0.0001,epochs=1000):
     """
     Train the GNN model on the trained data
     """
@@ -69,13 +84,13 @@ def train(data:Data,lr=0.001,epochs=100):
             loss.backward()
             optim.step()
             
-            if i % 10 == 0:
+            if i % 100 == 0:
                 with torch.no_grad():
                     output = model(data)
                     metric = R2Score()
                     metric.update(output[data.val_mask],data.y[data.val_mask])
                     score = metric.compute().item()
-                    file.write(f'R_2 Score after epoch {i-1} is {score}\n')
+                    file.write(f'R_2 Score after epoch {i} is {score}\n')
     
         file.close()
                 
