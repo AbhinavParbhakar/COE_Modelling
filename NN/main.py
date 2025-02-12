@@ -3,7 +3,7 @@ from torch.utils.data import DataLoader,Dataset
 import torch.nn as nn
 import pandas as pd
 from torch.nn.functional import mse_loss
-from torch.optim import Adagrad
+from torch.optim import Adagrad, Adam
 from sklearn.compose import ColumnTransformer
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler,OneHotEncoder
@@ -12,6 +12,21 @@ import numpy as np
 import matplotlib.pyplot as plt
 from numpy.random import permutation
 import os
+import subprocess
+import sys
+
+torch.manual_seed(25)
+
+if "KAGGLE_KERNEL_RUN_TYPE" in os.environ:
+    print("Started download for pytorch_geometric")
+    import torch
+    version = torch.__version__.split("+")[0]  # Extracts version without CUDA/CPU suffix
+    install_cmd = [
+        sys.executable, "-m", "pip", "install",
+        "torcheval"
+    ]
+    subprocess.check_call(install_cmd)
+from torcheval.metrics import R2Score
 
 class ModelDataset(Dataset):
     def __init__(self,features:np.ndarray,targets:np.ndarray):
@@ -28,39 +43,46 @@ class NN(nn.Module):
     def __init__(self):
         super().__init__()
         
-        self.l1 = nn.Linear(32,128)
-        self.l2 = nn.Linear(128,64)
-        self.l3 = nn.Linear(64,32)
-        self.l4 = nn.Linear(32,16)
-        self.l5 = nn.Linear(16,1)
-        
-        self.relu = nn.ReLU()
+        self.net = nn.Sequential(
+            nn.Linear(32,160),
+            nn.ReLU(),
+            
+            nn.Linear(160,80),
+            nn.ReLU(),
+            
+            nn.Linear(80,40),
+            nn.ReLU(),
+            
+            nn.Linear(40,20),
+            nn.ReLU(),
+            
+            nn.Linear(20,10),
+            nn.ReLU(),
+            
+            nn.Linear(10,1)
+        )
     
     def forward(self,x):
-        x = self.l1(x)
-        x = self.relu(x)
-        x = self.l2(x)
-        x = self.relu(x)
-        x = self.l3(x)
-        x = self.relu(x)
-        x = self.l4(x)
-        x = self.relu(x)
-        x = self.l5(x)
+        x = self.net(x)
         
         return x
 
-def train(model:nn.Module,train_loader:DataLoader,val_loader:DataLoader)->None:
+def train(model:nn.Module,train_loader:DataLoader,val_loader:DataLoader,)->None:
     loss_fun = mse_loss
-    epochs = 1000
-    lr = 0.001
-    l2 = 0.00001
+    epochs = 200
+    lr = 0.0005
+    l2 = 0.07
+    val_freq=10
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    train_r2 = R2Score()
+    val_r2 = R2Score()
     
     model = model.to(device=device)
     
-    optim = Adagrad(model.parameters(),lr=lr,weight_decay=l2)
+    optim = Adam(model.parameters(),lr=lr,weight_decay=l2)
     
-    val_scores = []
+    val_mae_scores = []
+    train_mae_scores = []
     with open('nn-results.txt','w') as file:
         for i in range(epochs):
             model.train()
@@ -74,30 +96,54 @@ def train(model:nn.Module,train_loader:DataLoader,val_loader:DataLoader)->None:
                 loss.backward()
                 optim.step()
             
-            if i % 200 == 0:
+            if i % int(epochs/val_freq) == 0:
                 with torch.no_grad():
-                    i = 0
-                    val_score = 0
-                    valid_los = nn.L1Loss()
+                    val_mae = 0
+                    train_mae = 0
+                    mae = torch.nn.functional.l1_loss
+                    
+                    for features, targets in train_loader:
+                        features = features.to(device)
+                        targets = targets.to(device)
+                        output = model(features)
+                        train_mae += mae(output,targets).item()
+                        train_r2.update(output,targets)
+                    
+                    
                     for features, targets in val_loader:
                         features = features.to(device)
                         targets = targets.to(device)
                         output = model(features)
-                        score = valid_los(output,targets)
-                        val_score += score.item()
-                        i += 1
+                        score = mae(output,targets)
+                        val_r2.update(output,targets)
+                        val_mae += score.item()
                     
-                    file.write(f'Validation MAE after epoch {i} is {val_score/i}\n')
-                    val_scores.append(val_score/i)
+                    train_r2_score = train_r2.compute().item()
+                    valid_r2_score = val_r2.compute().item()
+                    train_r2.reset()
+                    val_r2.reset()
+                    val_mae = val_mae/len(val_loader)
+                    train_mae = train_mae/len(train_loader)
+                    file.write(f'\n-----------------------------------------------\n')
+                    file.write(f'Training R2 after epoch{i}: {train_r2_score:.3f}\n')
+                    file.write(f'Training MAE after epoch{i}: {train_mae:.3f}\n')
+                    file.write(f'\nValidation R2 after epoch{i}: {valid_r2_score:.3f}\n')
+                    file.write(f'Validation MAE after epoch {i}: {val_mae:.3f}\n')
+                    file.write(f'\n-----------------------------------------------\n')
+                    val_mae_scores.append(val_mae)
+                    train_mae_scores.append(train_mae)
 
         file.close()
         
-        epochs = [i + 1 for i in range(len(val_scores))]
+        epochs = [i + 1 for i in range(len(val_mae_scores))]
         plt.figure(figsize=(10,6))
-        plt.plot(epochs,val_scores)
-        plt.xlabel('Epoch (Every 200)')
+        plt.plot(epochs,val_mae_scores,"bo-",label="Val. MAE")
+        plt.plot(epochs,train_mae_scores,"ro-",label="Train MAE")
+        plt.xlabel('Epochs')
         plt.ylabel('MAE Score')
-        plt.title("Validation MAE Scores over Epochs")
+        plt.legend()
+        plt.grid(visible=True,color='k')
+        plt.title("Training and Validation MAE")
         plt.savefig('NN_mae_scores.png')
                     
 
@@ -141,7 +187,7 @@ def create_features(file_source:str):
 
     
 if __name__ == "__main__":
-    batch_size = 32
+    batch_size = 16
     if "KAGGLE_KERNEL_RUN_TYPE" in os.environ:
         file_path = "/kaggle/input/coe-datatest-2/features2-4-2025.xlsx"
     else:

@@ -96,6 +96,7 @@ def train(data:Data,lr=0.01,epochs=1000):
                     loss :torch.Tensor = mae(output[data.val_mask],data.y[data.val_mask])
                     loss = loss.item()
                     score = metric.compute().item()
+                    metric.reset()
                     r2_scores.append(score)
                     valid_scores.append(loss)
                     file.write(f'R_2 Score after epoch {i} is {score}\n')

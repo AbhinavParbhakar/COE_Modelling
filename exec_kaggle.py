@@ -9,6 +9,7 @@ def run_model(model_name="GNN"):
     model_name = "GNN" or "NN"
     """
     metadata = json.load(open(f'./{model_name}/kernel-metadata.json'))
+    print(metadata)
     id = metadata['id']
 
     os.system(f'kaggle kernels push -p ./{model_name}')
@@ -27,6 +28,6 @@ def run_model(model_name="GNN"):
     os.system(f'kaggle kernels output {id} -p ./data/output')
     
 if __name__ == "__main__":
-    run_model(model_name="GNN")
+    run_model(model_name="NN")
     
 
