@@ -8,7 +8,7 @@ if "KAGGLE_KERNEL_RUN_TYPE" in os.environ:
     import torch
     version = torch.__version__.split("+")[0]  # Extracts version without CUDA/CPU suffix
     install_cmd = [
-        sys.executable, "-m", "pip", "install",
+        sys.executable, "-m", "pip", "install", "geopandas",
         "torch_geometric", "pyg_lib", "torch_scatter", "torcheval",
         "torch_sparse", "torch_cluster", "torch_spline_conv",
         "-f", f"https://data.pyg.org/whl/torch-{version}+cu121.html"
@@ -19,6 +19,10 @@ if "KAGGLE_KERNEL_RUN_TYPE" in os.environ:
 import pandas as pd
 import torch
 import numpy as np
+from shapely import Point, distance, LineString, MultiLineString
+from shapely.ops import linemerge
+import geopandas as gpd
+import math
 
 from torch_geometric.data import Data
 from torch_geometric.transforms import RandomNodeSplit
@@ -31,6 +35,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import StandardScaler,OneHotEncoder
 from sklearn.mixture import GaussianMixture
 import matplotlib.pyplot as plt
+import tqdm
 
 
 class GNN(nn.Module):
@@ -129,71 +134,146 @@ def preprocess_data(df:pd.DataFrame)->np.ndarray:
     Then return the output as a nd.ndarray 
     """
     transform = ColumnTransformer(transformers=[
-        ('Standard Scale',StandardScaler(),['Lat','Long','Speed (km/h)']),
-        ('One Hot Encode',OneHotEncoder(),['roadclass','Land Usage'])
+        ('Standard Scale',StandardScaler(),['Lat','Long','speed_First']),
+        ('One Hot Encode',OneHotEncoder(),['roadclass','Aggregate_First','descriptio_First'])
     ])
     
     return transform.fit_transform(df)
 
-def create_features(file_source:str)->Data:
+    
+def output_adj_matrix(df:pd.DataFrame,roadclass_gdf:gpd.GeoDataFrame)->np.ndarray:
+    """
+    Given the DataFrame and the GeoDataFrame, match each road segment, where
+    the matching distance equals the value specified in the 'Proximity_Distance' col in the df.
+    """
+    df = df.copy(deep=True)
+    roadclass_gdf = roadclass_gdf.copy(deep=True)
+    CoE_crs = 3780
+    
+    
+    # Create the geometry col in df    
+    df['geometry'] = df.apply(lambda x : Point(x['Long'],x['Lat']),axis=1)
+    features_gpd = gpd.GeoDataFrame(data=df,geometry='geometry',crs='EPSG:4326')
+    features_gpd = features_gpd.to_crs(epsg=CoE_crs)
+    roadclass_gdf = roadclass_gdf.to_crs(epsg=CoE_crs)
+    roadclass_gdf['fake_geo'] = roadclass_gdf['geometry']
+    
+    # Join points to a road segment
+    joined = features_gpd.sjoin_nearest(right=roadclass_gdf,how='inner',distance_col='distance')
+    breakpoint()
+    
+    features_gpd['road_geo'] = joined['fake_geo']
+    features_gpd = features_gpd.set_geometry('road_geo')
+    features_gpd = features_gpd.drop('geometry',axis=1)
+    
+    # Elongate the points, by intersecting the features_lines with lines that they touch from the original
+    elongated_lines : gpd.GeoDataFrame = features_gpd.sjoin(df=roadclass_gdf,how='left',)
+    elongated_lines : gpd.GeoDataFrame = elongated_lines[elongated_lines.apply(lambda x: not x['road_geo'].equals(x['fake_geo']),axis=1)]
+    
+    grouped_lines = elongated_lines.groupby('Estimation_point',as_index=False).apply(return_merged_line)
+    
+    
+    grouped_gf = gpd.GeoDataFrame(grouped_lines,geometry='merged_lines',crs=f'EPSG:{CoE_crs}')
+    
+    joined_lines = features_gpd.merge(grouped_gf,on='Estimation_point',how='left')
+    
+    
+    missed_lines : gpd.GeoDataFrame = joined_lines[joined_lines['merged_lines'].isna()]
+    missed_lines['merged_lines'] = missed_lines['road_geo']
+    
+    print(joined_lines.active_geometry_name)
+    joined_lines = joined_lines.set_geometry('merged_lines')
+    
+    comparison_df = joined_lines.copy()
+    comparison_df['og_lines'] = comparison_df['merged_lines']
+    
+    intersections = joined_lines.sjoin(comparison_df,how='left')
+    breakpoint()
+    intersections = intersections[(intersections['merged_lines'] != intersections['og_lines'])]
+    breakpoint()
+    
+    
+    
+    # pl = features_gpd.plot(figsize=(10,6))
+    # features_gpd.to_file('.data/shape_files/extended_lines')
+
+    
+    # features_copy = features_gpd.copy(deep=True)
+    # features_gpd['road_geo'] = features_gpd.geometry.buffer(100)
+    # # features_gpd.to_file('./data/shape_files/buffer')
+    
+    # joined_results : gpd.GeoDataFrame = features_gpd.sjoin(df=features_gpd,how='inner')
+    # cut_results : gpd.GeoDataFrame = joined_results[joined_results['Estimation_point_right'] != joined_results["Estimation_point_left"]]
+    
+    # cut_results.to_file('./data/shape_files/merged_results_final')
+
+def return_merged_line(x):
+    lines = MultiLineString(x['fake_geo'].to_list())
+    merged_line = linemerge(lines)
+    return pd.Series({'Estimation_point':x['Estimation_point'].unique().tolist()[0],'merged_lines':merged_line}) 
+
+def create_features(file_source:str,shape_file:str)->Data:
     """
     Given a data source linking to the the excel file storing the data, create input for the GNN,
     and returns the graph data after splitting the features using RandomNode Split
     """
-    df = pd.read_excel(file_source)
-    
+    df = pd.read_excel(file_source)  
+     
     # Split X and Y
-    features = df.drop(labels=['Volume','UniqueID','Date'],axis=1)
-    targets = df['Volume']
+    targets = df['AAWDT']
+    features = df.drop('AAWDT',axis=1)
+    
+    
+    # Create the adjacency matrix
+    roadclass_gdf = gpd.read_file(shape_file)
+    output_adj_matrix(features,roadclass_gdf)
     
     # Scale and get the data as a np.array
     features_array = preprocess_data(features)
+
     
-    # Generate the weights for the graphs by creating clusters
-    em = GaussianMixture(n_components=16,random_state=0)
-    em.fit(features_array)
-    clusters = em.predict(features_array)
-    clusters = clusters.reshape((-1,1))
     
     # Create the edge_index
     source = []
     destination = []
     
-    for i in range(features_array.shape[0]):
-        for j in range(features_array.shape[0]):
-            cluster_i = clusters[i][0]
-            cluster_j = clusters[j][0]
-            if i != j and cluster_i == cluster_j:
+    # for i in range(features_array.shape[0]):
+    #     for j in range(features_array.shape[0]):
+    #         cluster_i = clusters[i][0]
+    #         cluster_j = clusters[j][0]
+    #         if i != j and cluster_i == cluster_j:
                 
-                # Add one way
-                source.append(i)
-                destination.append(j)
+    #             # Add one way
+    #             source.append(i)
+    #             destination.append(j)
                 
-                # Add the other way
-                source.append(j)
-                destination.append(i)
+    #             # Add the other way
+    #             source.append(j)
+    #             destination.append(i)
     
-    source_array = np.array(source).reshape((1,-1))
-    destination_array = np.array(destination).reshape((1,-1))
-    edges = np.concatenate((source_array,destination_array),axis=0)
-    print(edges.shape)  
-    print(features_array.shape) 
+    # source_array = np.array(source).reshape((1,-1))
+    # destination_array = np.array(destination).reshape((1,-1))
+    # edges = np.concatenate((source_array,destination_array),axis=0)
+    # print(edges.shape)  
+    # print(features_array.shape) 
     
-    x = torch.tensor(features_array,dtype=torch.float)
-    edge_index = torch.tensor(edges,dtype=torch.long) 
-    y = torch.tensor(targets.to_numpy().reshape((-1,1)),dtype=torch.float)
+    # x = torch.tensor(features_array,dtype=torch.float)
+    # edge_index = torch.tensor(edges,dtype=torch.long) 
+    # y = torch.tensor(targets.to_numpy().reshape((-1,1)),dtype=torch.float)
     
-    dataset = Data(x=x,edge_index=edge_index,y=y)
-    split = RandomNodeSplit(split='train_rest',num_test=0.1,num_val=0.1)
-    dataset : Data = split(dataset)
+    # dataset = Data(x=x,edge_index=edge_index,y=y)
+    # split = RandomNodeSplit(split='train_rest',num_test=0.0,num_val=0.1)
+    # dataset : Data = split(dataset)
     
-    return dataset
+    return None
 
 if __name__ == "__main__":
     if "KAGGLE_KERNEL_RUN_TYPE" in os.environ:
-        data_source = "/kaggle/input/coe-datatest-2/features2-4-2025.xlsx"
+        data_source = "/kaggle/input/coe-datatest/coe_data_v3.xlsx"
+        shape_file = '/kaggle/input/coe-datatest/RoadClass_CoE.shp'
     else:
-        data_source = './data/excel_files/features2-4-2025.xlsx'
-    dataset = create_features(data_source)
-    train(data=dataset)
+        data_source = './data/excel_files/coe_data_v3.xlsx'
+        shape_file = './data/shape_files/RoadClass_CoE.shp'
+    dataset = create_features(data_source,shape_file)
+    #train(data=dataset)
     

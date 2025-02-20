@@ -44,22 +44,19 @@ class NN(nn.Module):
         super().__init__()
         
         self.net = nn.Sequential(
-            nn.Linear(32,160),
+            nn.Linear(16,64),
             nn.ReLU(),
             
-            nn.Linear(160,80),
+            nn.Linear(64,32),
             nn.ReLU(),
             
-            nn.Linear(80,40),
+            nn.Linear(32,16),
             nn.ReLU(),
             
-            nn.Linear(40,20),
+            nn.Linear(16,8),
             nn.ReLU(),
             
-            nn.Linear(20,10),
-            nn.ReLU(),
-            
-            nn.Linear(10,1)
+            nn.Linear(8,1),
         )
     
     def forward(self,x):
@@ -67,10 +64,10 @@ class NN(nn.Module):
         
         return x
 
-def train(model:nn.Module,train_loader:DataLoader,val_loader:DataLoader,)->None:
+def train(model:nn.Module,train_loader:DataLoader,val_loader:DataLoader,cluster_name)->None:
     loss_fun = mse_loss
     epochs = 200
-    lr = 0.0005
+    lr = 0.001
     l2 = 0.07
     val_freq=10
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -83,7 +80,7 @@ def train(model:nn.Module,train_loader:DataLoader,val_loader:DataLoader,)->None:
     
     val_mae_scores = []
     train_mae_scores = []
-    with open('nn-results.txt','w') as file:
+    with open(f'nn-results_cluster{cluster_name}.txt','w') as file:
         for i in range(epochs):
             model.train()
             for features,targets in train_loader:
@@ -144,7 +141,7 @@ def train(model:nn.Module,train_loader:DataLoader,val_loader:DataLoader,)->None:
         plt.legend()
         plt.grid(visible=True,color='k')
         plt.title("Training and Validation MAE")
-        plt.savefig('NN_mae_scores.png')
+        plt.savefig(f'NN_mae_scores_cluster{cluster_name}.png')
                     
 
 def preprocess_data(df:pd.DataFrame)->np.ndarray:
@@ -174,45 +171,62 @@ def create_features(file_source:str):
     
     # Scale and get the data as a np.array
     features_array = preprocess_data(features)
-    em = GaussianMixture(n_components=16,random_state=0)
+    em = GaussianMixture(n_components=12,random_state=0)
     em.fit(features_array)
     clusters = em.predict(features_array)
     clusters = clusters.reshape((-1,1))
-    encoded_clusters = OneHotEncoder().fit_transform(clusters).toarray()
-    features = np.concatenate([encoded_clusters,features_array],axis=1)
-    targets = targets.to_numpy().reshape((-1,1))
+    
+    temp_features = np.concatenate([features_array,clusters],axis=1)
+    
+    columns = [str(i) for i in range(temp_features.shape[1])]
+    data = {col:temp_features[:,int(col)] for col in columns}
+    data["targets"] = targets.to_numpy()
+    temp_df = pd.DataFrame(data=data)
+    print(temp_df.head())    
+    clusters = []
+    
+    for name,data in iter(temp_df.groupby(by=["16"],as_index=False)):
+        clusters.append(data.reset_index(drop=True))
+    
+    # encoded_clusters = OneHotEncoder().fit_transform(clusters).toarray()
+    # features = np.concatenate([encoded_clusters,features_array],axis=1)
+    # targets = targets.to_numpy().reshape((-1,1))
 
-    return (features,targets)
+    return clusters
 
 
     
 if __name__ == "__main__":
     batch_size = 16
     if "KAGGLE_KERNEL_RUN_TYPE" in os.environ:
-        file_path = "/kaggle/input/coe-datatest-2/features2-4-2025.xlsx"
+        file_path = "/kaggle/input/coe-dataset-3/features2-12-2025.xlsx"
     else:
         file_path = './data/excel_files/features2-4-2025.xlsx'
-    features,targets = create_features(file_path)
-    ordering = permutation(features.shape[0])
-    shuffled_features = features[ordering]
-    shuffled_targets = targets[ordering]
-    test_indices = features.shape[0] // 5
+    clusters = create_features(file_path)
+    # ordering = permutation(features.shape[0])
+    # shuffled_features = features[ordering]
+    # shuffled_targets = targets[ordering]
+    # test_indices = features.shape[0] // 5
     
-    x_test = shuffled_features[:test_indices]
-    y_test = shuffled_targets[:test_indices]
+    # x_test = shuffled_features[:test_indices]
+    # y_test = shuffled_targets[:test_indices]
     
-    x_train = shuffled_features[test_indices:]
-    y_train = shuffled_targets[test_indices:]
+    # x_train = shuffled_features[test_indices:]
+    # y_train = shuffled_targets[test_indices:]
+    for cluster in clusters:
+        cluster_name = cluster.loc[0,"16"]
+        targets = cluster["targets"].to_numpy().reshape(-1,1)
+        features = cluster.drop(["targets","16"],axis=1).to_numpy()
+        print(features.shape)
+        print(cluster.columns)
     
-    x_train,x_valid,y_train,y_valid = train_test_split(x_train,y_train,test_size=0.33, random_state=42)
-    
-    test_set = ModelDataset(x_test,y_test)
-    train_set = ModelDataset(x_train,y_train)
-    valid_set = ModelDataset(x_valid,y_valid)
-    
-    test_loader = DataLoader(test_set,batch_size=batch_size,shuffle=True)
-    train_loader = DataLoader(train_set,batch_size=batch_size,shuffle=True)
-    valid_loader = DataLoader(valid_set,batch_size=batch_size,shuffle=True)
-    
-    train(NN(),train_loader,valid_loader)
+        x_train,x_valid,y_train,y_valid = train_test_split(features,targets,test_size=0.1, random_state=42)
+        
+        train_set = ModelDataset(x_train,y_train)
+        valid_set = ModelDataset(x_valid,y_valid)
+        
+        train_loader = DataLoader(train_set,batch_size=batch_size,shuffle=True)
+        valid_loader = DataLoader(valid_set,batch_size=batch_size,shuffle=True)
+        
+        train(NN(),train_loader,valid_loader,cluster_name)
     
