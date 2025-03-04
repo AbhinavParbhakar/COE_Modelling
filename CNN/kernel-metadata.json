@@ -1,0 +1,15 @@
+{
+  "id": "abhinavparbhakar/COE-Estimation-CNN",
+  "title": "COE Estimation CNN",
+  "code_file": "main.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_tpu": true,
+  "enable_internet": "true",
+  "dataset_sources": ["abhinavparbhakar/coe-cnn-experiment"],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
+}

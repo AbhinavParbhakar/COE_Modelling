@@ -160,37 +160,39 @@ def output_adj_matrix(df:pd.DataFrame,roadclass_gdf:gpd.GeoDataFrame)->np.ndarra
     
     # Join points to a road segment
     joined = features_gpd.sjoin_nearest(right=roadclass_gdf,how='inner',distance_col='distance')
-    breakpoint()
+     
     
     features_gpd['road_geo'] = joined['fake_geo']
     features_gpd = features_gpd.set_geometry('road_geo')
     features_gpd = features_gpd.drop('geometry',axis=1)
+    features_gpd = features_gpd.to_crs(epsg=4326)
+    features_gpd.to_csv('./data/excel_files/data_with_lines.csv',index=False)
+
     
-    # Elongate the points, by intersecting the features_lines with lines that they touch from the original
-    elongated_lines : gpd.GeoDataFrame = features_gpd.sjoin(df=roadclass_gdf,how='left',)
-    elongated_lines : gpd.GeoDataFrame = elongated_lines[elongated_lines.apply(lambda x: not x['road_geo'].equals(x['fake_geo']),axis=1)]
+    # # Elongate the points, by intersecting the features_lines with lines that they touch from the original
+    # elongated_lines : gpd.GeoDataFrame = features_gpd.sjoin(df=roadclass_gdf,how='left',)
+    # elongated_lines : gpd.GeoDataFrame = elongated_lines[elongated_lines.apply(lambda x: not x['road_geo'].equals(x['fake_geo']),axis=1)]
     
-    grouped_lines = elongated_lines.groupby('Estimation_point',as_index=False).apply(return_merged_line)
-    
-    
-    grouped_gf = gpd.GeoDataFrame(grouped_lines,geometry='merged_lines',crs=f'EPSG:{CoE_crs}')
-    
-    joined_lines = features_gpd.merge(grouped_gf,on='Estimation_point',how='left')
+    # grouped_lines = elongated_lines.groupby('Estimation_point',as_index=False).apply(return_merged_line)
     
     
-    missed_lines : gpd.GeoDataFrame = joined_lines[joined_lines['merged_lines'].isna()]
-    missed_lines['merged_lines'] = missed_lines['road_geo']
+    # grouped_gf = gpd.GeoDataFrame(grouped_lines,geometry='merged_lines',crs=f'EPSG:{CoE_crs}')
     
-    print(joined_lines.active_geometry_name)
-    joined_lines = joined_lines.set_geometry('merged_lines')
+    # joined_lines = features_gpd.merge(grouped_gf,on='Estimation_point',how='left')
     
-    comparison_df = joined_lines.copy()
-    comparison_df['og_lines'] = comparison_df['merged_lines']
+    # missed_lines : gpd.GeoDataFrame = joined_lines[joined_lines['merged_lines'].isna()]
+    # missed_lines['merged_lines'] = missed_lines['road_geo']
     
-    intersections = joined_lines.sjoin(comparison_df,how='left')
-    breakpoint()
-    intersections = intersections[(intersections['merged_lines'] != intersections['og_lines'])]
-    breakpoint()
+    # print(joined_lines.active_geometry_name)
+    # joined_lines = joined_lines.set_geometry('merged_lines')
+    
+    # comparison_df = joined_lines.copy()
+    # comparison_df['og_lines'] = comparison_df['merged_lines']
+    
+    # intersections = joined_lines.sjoin(comparison_df,how='left')
+     
+    # intersections = intersections[(intersections['merged_lines'] != intersections['og_lines'])]
+     
     
     
     
