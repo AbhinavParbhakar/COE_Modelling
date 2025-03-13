@@ -5,7 +5,7 @@ from PIL import Image
 import pandas as pd
 import numpy as np
 import os
-from sklearn.metrics import r2_score
+from sklearn.metrics import r2_score, mean_absolute_percentage_error
 import subprocess
 import sys
 
@@ -158,7 +158,7 @@ class CrossAttentionCNN(nn.Module):
         self.w_v = nn.Linear(in_features=540,out_features=output_size,bias=False)
         self.softmax = nn.Softmax(dim=1)
         
-        self.fc1 = nn.Linear(in_features=self.output_size,out_features=500)
+        self.fc1 = nn.Linear(in_features=1500,out_features=500)
         self.fc2 = nn.Linear(in_features=500,out_features=200)
         self.fc3 = nn.Linear(in_features=200,out_features=50)
         self.fc4 = nn.Linear(in_features=50,out_features=1)
@@ -220,13 +220,14 @@ class CrossAttentionCNN(nn.Module):
         coarse_image_embedding = self.flatten(x1)
         granular_image_embedding = self.flatten(x2)
         
-        attention_scores = self.cross_attention(main_vector=granular_image_embedding,cross_vector=coarse_image_embedding,hidden_size=self.hidden_size,output_size=self.output_size)
-        output = self.fc1(attention_scores)
+        # attention_scores = self.cross_attention(main_vector=granular_image_embedding,cross_vector=coarse_image_embedding,hidden_size=self.hidden_size,output_size=self.output_size)
+        combination = torch.cat(tensors=(coarse_image_embedding,granular_image_embedding),dim=1)
+        output = self.fc1(combination)
         output = self.relu(output)
         output = self.fc2(output)
         output = self.relu(output)
         output = self.fc3(output)
-        output = self.relu()
+        output = self.relu(output)
         
         output = self.fc4(output)
         
@@ -240,7 +241,7 @@ class CrossAttentionCNN(nn.Module):
         K = self.w_k(main_vector)
         V = self.w_v(main_vector) # N * output_size
         
-        attention = self.softmax( torch.mm(Q * torch.t(K)) / hidden_size ** 0.5) # Size N * N
+        attention = self.softmax( torch.mm(Q , torch.t(K)) / hidden_size ** 0.5) # Size N * N
         
         attention_scores = torch.mm(attention,V)
         
@@ -360,6 +361,7 @@ def train(model:nn.Module,epochs:int,lr:float,batch_size:int,decay:float,train_d
         
             training_loss = 0 # rmse
             r2 = 0
+            mape = 0
             for coarse_input,granular_input, target in training_loader:
                 optim.zero_grad()
                 coarse_input = coarse_input.to(device)
@@ -369,35 +371,43 @@ def train(model:nn.Module,epochs:int,lr:float,batch_size:int,decay:float,train_d
                 loss = torch.nn.functional.mse_loss(pred,target)
                 training_loss += loss.item() ** (0.5)
                 r2 += r2_score(y_true=target.numpy(force=True),y_pred=pred.numpy(force=True))
+                mape += mean_absolute_percentage_error(y_true=target.numpy(force=True),y_pred=pred.numpy(force=True))
                 loss.backward()
                 optim.step()
                 
             if i % int(epochs/10) == 0:
                 training_loss = training_loss/len(training_loader)
                 r2 = r2/len(training_loader)
+                mape = mape/len(training_loader)
                 file.write('\n---------------------------\n')
                 file.write(f'Training Epoch: {i}\n')
                 file.write(f'r2 score is {r2:.3f}\n')
+                file.write(f'MAPE is {mape * 100:.2f}%\n')
                 file.write(f'RMSE is {training_loss:.3f}\n')
                 file.write('---------------------------\n')
             
             if i % int(epochs/10) == 0:
                 valid_loss = 0 # rmse
                 valid_r2 = 0
-                for input, target in test_loader:
+                valid_mape = 0
+                for coarse_input,granular_input, target in test_loader:
                     with torch.no_grad():
-                        input = input.to(device)
+                        coarse_input = coarse_input.to(device)
+                        granular_input = granular_input.to(device)
                         target = target.to(device)
-                        pred = model(input)
+                        pred = model(coarse_input,granular_input)
                         loss = torch.nn.functional.mse_loss(pred,target)
                         valid_loss += loss.item() ** (0.5)
                         valid_r2 += r2_score(y_true=target.numpy(force=True),y_pred=pred.numpy(force=True))
+                        valid_mape += mean_absolute_percentage_error(y_true=target.numpy(force=True),y_pred=pred.numpy(force=True))
                     
                 valid_loss = valid_loss/len(test_loader)
                 valid_r2 = valid_r2/len(test_loader)
+                valid_mape = valid_mape/len(test_loader)
                 file.write('\n---------------------------\n')
                 file.write(f'Validation Epoch: {i}\n')
                 file.write(f'r2 score is {valid_r2:.3f}\n')
+                file.write(f'MAPE is {valid_mape * 100:.2f}%\n')
                 file.write(f'RMSE is {valid_loss:.3f}\n')
                 file.write('---------------------------\n')
                 
@@ -418,9 +428,9 @@ if __name__ == "__main__":
     
     # Hyper parameters
     epochs = 100
-    lr = 0.005
-    batch_size = 10
-    l2_decay = 0.005
+    lr = 0.0005
+    batch_size = 14
+    l2_decay = 0.0005
     training_split = 0.85
     model = CrossAttentionCNN()
     
