@@ -5,7 +5,8 @@ from PIL import Image
 import pandas as pd
 import numpy as np
 import os
-from sklearn.metrics import r2_score
+from torchvision.transforms import ToTensor
+from sklearn.metrics import r2_score, mean_absolute_percentage_error
 import subprocess
 import sys
 
@@ -158,7 +159,7 @@ class CrossAttentionCNN(nn.Module):
         self.w_v = nn.Linear(in_features=540,out_features=output_size,bias=False)
         self.softmax = nn.Softmax(dim=1)
         
-        self.fc1 = nn.Linear(in_features=self.output_size,out_features=500)
+        self.fc1 = nn.Linear(in_features=1500,out_features=500)
         self.fc2 = nn.Linear(in_features=500,out_features=200)
         self.fc3 = nn.Linear(in_features=200,out_features=50)
         self.fc4 = nn.Linear(in_features=50,out_features=1)
@@ -220,13 +221,14 @@ class CrossAttentionCNN(nn.Module):
         coarse_image_embedding = self.flatten(x1)
         granular_image_embedding = self.flatten(x2)
         
-        attention_scores = self.cross_attention(main_vector=granular_image_embedding,cross_vector=coarse_image_embedding,hidden_size=self.hidden_size,output_size=self.output_size)
-        output = self.fc1(attention_scores)
+        # attention_scores = self.cross_attention(main_vector=granular_image_embedding,cross_vector=coarse_image_embedding,hidden_size=self.hidden_size,output_size=self.output_size)
+        combination = torch.cat(tensors=(coarse_image_embedding,granular_image_embedding),dim=1)
+        output = self.fc1(combination)
         output = self.relu(output)
         output = self.fc2(output)
         output = self.relu(output)
         output = self.fc3(output)
-        output = self.relu()
+        output = self.relu(output)
         
         output = self.fc4(output)
         
@@ -240,7 +242,7 @@ class CrossAttentionCNN(nn.Module):
         K = self.w_k(main_vector)
         V = self.w_v(main_vector) # N * output_size
         
-        attention = self.softmax( torch.mm(Q * torch.t(K)) / hidden_size ** 0.5) # Size N * N
+        attention = self.softmax( torch.mm(Q , torch.t(K)) / hidden_size ** 0.5) # Size N * N
         
         attention_scores = torch.mm(attention,V)
         
@@ -251,15 +253,18 @@ class CrossAttentionCNN(nn.Module):
         
 
 
-def convert_images_to_numpy(path:str)->np.ndarray:
+def convert_images_to_numpy(image_path:str,excel_path:str)->np.ndarray:
     """
     Converts the images stored under the given parameter path into one large ``numpy.ndarray`` object.
+    Uses the ordering of the inputs in the excel path to order the images in the outputted array.
     
     Parameters
     ----------
     
-    path : ``str``
+    image_path : ``str``
         Path of the folder containing images
+    excel_path : ``str``
+        Path of the address for the excel file
     
     Returns
     -------
@@ -267,57 +272,55 @@ def convert_images_to_numpy(path:str)->np.ndarray:
     ``numpy.ndarray``
         The numpy array containing the images
     """
-    absolute_path = os.path.abspath(path)
+    df = pd.read_csv(excel_path)
+    file_names = df['Estimation_point'].tolist()
+    absolute_path = os.path.abspath(image_path)
     nested_path_generator = os.walk(absolute_path)
-    image_paths = []
+    image_paths = None
     images_numpy = []
     
-    for dirpath,dirnames,filenames in nested_path_generator:
-        image_paths.extend([os.path.join(dirpath,name) for name in filenames])       
     
-    for image_path in image_paths:
-        image_array = np.float32(np.array(Image.open(image_path)))
-        images_numpy.append(image_array.reshape((3,image_array.shape[0],image_array.shape[1])))
+    for dirpath,dirnames,filenames in nested_path_generator:
+        image_paths = {name.split('.')[0] : os.path.join(dirpath,name) for name in filenames}  
+        
+    for file_name in file_names:
+        image_path = image_paths[str(file_name)]
+        image_array = np.array(Image.open(image_path))
+        images_numpy.append(image_array)
     
     return_numpy_array = np.array(images_numpy)
     return return_numpy_array
 
-def generate_target_values_numpy(excel_path:str,image_path:str)->np.ndarray:
+def generate_target_values_numpy(file_path:str)->np.ndarray:
     """
-    Create a ``numpy.ndarray`` containing parallel matched regression values for the images
-    included in the provided folder, matching based on name of image to the row in the excel file.
+    Create a ``numpy.ndarray`` containing the AAWDT values for each sample in the provided file
     
     Parameters
     ----------
-    excel_path : ``str``
-        The path of the excel file to be opened. Contains the regression values per Study ID.
-    image_path : ``str``
-        The path of the folder containing the images. Labled with study IDs.
+    file_path : ``str``
+        The path of the excel/csv file to be opened. Contains the regression values per Study ID.
     
     Returns
     -------
     ``numpy.ndarray``
         Numpy array corresponding to the target values matched with given images. 
     """
-    absolute_path = os.path.abspath(image_path)
-    df = pd.read_excel(excel_path)
-    nested_path_generator = os.walk(absolute_path)
-    image_id_array = []
-    regression_values = []
+    df = pd.read_csv(file_path)
+    regression_values = df['AAWDT'].values
     
-    for dirpath,dirnames,filenames in nested_path_generator:
-        image_id_array.extend([name.split('.')[0] for name in filenames])
-        
-    for image_id in image_id_array:
-        values = df['AAWDT'][df['Estimation_point'] == int(image_id)].values
-        regression_values.append(values[-1])
-    
-    return np.array(regression_values).reshape((-1,1)).astype(np.float32)
+    return regression_values.reshape((-1,1)).astype(np.float32)
 
 class ImageDataset(Dataset):
     def __init__(self,coarse_images:np.ndarray,granular_images:np.ndarray,targets:np.ndarray):
-        self.coarse_images = torch.from_numpy(coarse_images)
-        self.granular_images = torch.from_numpy(granular_images)
+        transformed_coarse_images = []
+        transformed_granular_images = []
+        for image in coarse_images:
+            transformed_coarse_images.append(ToTensor()(image).unsqueeze(dim=0))
+        for image in granular_images:
+            transformed_granular_images.append(ToTensor()(image).unsqueeze(dim=0))
+        self.coarse_images = torch.cat(transformed_coarse_images,dim=0)
+        self.granular_images = torch.cat(transformed_granular_images,dim=0)
+        
         self.y = torch.from_numpy(targets)
         
     def __len__(self):
@@ -360,6 +363,7 @@ def train(model:nn.Module,epochs:int,lr:float,batch_size:int,decay:float,train_d
         
             training_loss = 0 # rmse
             r2 = 0
+            mape = 0
             for coarse_input,granular_input, target in training_loader:
                 optim.zero_grad()
                 coarse_input = coarse_input.to(device)
@@ -369,35 +373,43 @@ def train(model:nn.Module,epochs:int,lr:float,batch_size:int,decay:float,train_d
                 loss = torch.nn.functional.mse_loss(pred,target)
                 training_loss += loss.item() ** (0.5)
                 r2 += r2_score(y_true=target.numpy(force=True),y_pred=pred.numpy(force=True))
+                mape += mean_absolute_percentage_error(y_true=target.numpy(force=True),y_pred=pred.numpy(force=True))
                 loss.backward()
                 optim.step()
                 
             if i % int(epochs/10) == 0:
                 training_loss = training_loss/len(training_loader)
                 r2 = r2/len(training_loader)
+                mape = mape/len(training_loader)
                 file.write('\n---------------------------\n')
                 file.write(f'Training Epoch: {i}\n')
                 file.write(f'r2 score is {r2:.3f}\n')
+                file.write(f'MAPE is {mape * 100:.2f}%\n')
                 file.write(f'RMSE is {training_loss:.3f}\n')
                 file.write('---------------------------\n')
             
             if i % int(epochs/10) == 0:
                 valid_loss = 0 # rmse
                 valid_r2 = 0
-                for input, target in test_loader:
+                valid_mape = 0
+                for coarse_input,granular_input, target in test_loader:
                     with torch.no_grad():
-                        input = input.to(device)
+                        coarse_input = coarse_input.to(device)
+                        granular_input = granular_input.to(device)
                         target = target.to(device)
-                        pred = model(input)
+                        pred = model(coarse_input,granular_input)
                         loss = torch.nn.functional.mse_loss(pred,target)
                         valid_loss += loss.item() ** (0.5)
                         valid_r2 += r2_score(y_true=target.numpy(force=True),y_pred=pred.numpy(force=True))
+                        valid_mape += mean_absolute_percentage_error(y_true=target.numpy(force=True),y_pred=pred.numpy(force=True))
                     
                 valid_loss = valid_loss/len(test_loader)
                 valid_r2 = valid_r2/len(test_loader)
+                valid_mape = valid_mape/len(test_loader)
                 file.write('\n---------------------------\n')
                 file.write(f'Validation Epoch: {i}\n')
                 file.write(f'r2 score is {valid_r2:.3f}\n')
+                file.write(f'MAPE is {valid_mape * 100:.2f}%\n')
                 file.write(f'RMSE is {valid_loss:.3f}\n')
                 file.write('---------------------------\n')
                 
@@ -409,27 +421,27 @@ if __name__ == "__main__":
     if os_name == 'nt':
         coarse_image_path = "./data/coarse images"
         granular_image_path = './data/granular images'
-        excel_path = './data/excel_files/base_data.xlsx'
+        excel_path = './data/excel_files/duplicates_removed.csv'
     else:
         coarse_image_path = "/kaggle/input/coe-cnn-Experiment/coarse images"
         granular_image_path = "/kaggle/input/coe-cnn-Experiment/granular images"
-        excel_path = "/kaggle/input/coe-cnn-Experiment/base_data.xlsx"
+        excel_path = "/kaggle/input/coe-cnn-Experiment/duplicates_removed.csv"
     
     
     # Hyper parameters
-    epochs = 100
+    epochs = 200
     lr = 0.005
     batch_size = 10
-    l2_decay = 0.005
+    l2_decay = 0.0005
     training_split = 0.85
     model = CrossAttentionCNN()
     
     # Load data
-    granular_images_ndarray = convert_images_to_numpy(path=granular_image_path)
+    granular_images_ndarray = convert_images_to_numpy(image_path=granular_image_path, excel_path=excel_path)
     
-    coarse_images_ndarray = convert_images_to_numpy(path=coarse_image_path)
+    coarse_images_ndarray = convert_images_to_numpy(image_path=coarse_image_path, excel_path=excel_path)
     
-    aawdt_ndarray = generate_target_values_numpy(excel_path=excel_path,image_path=granular_image_path)
+    aawdt_ndarray = generate_target_values_numpy(file_path=excel_path)
  
     # Shuffle data
     np.random.seed(0)
@@ -455,12 +467,12 @@ if __name__ == "__main__":
     test_dataset = ImageDataset(coarse_images=coarse_test,granular_images=granular_test,targets=aawdt_test)
     
     
-    # test_dataset = ImageDataset(images=x_test,targets=y_test)
-    # # model = GranularCNN()
-    # weights_manager = satlaspretrain_models.Weights()
-    # # model = weights_manager.get_pretrained_model(model_identifier='Sentinel2_Resnet50_SI_RGB',device='cpu')
+    # # test_dataset = ImageDataset(images=x_test,targets=y_test)
+    # # # model = GranularCNN()
+    # # weights_manager = satlaspretrain_models.Weights()
+    # # # model = weights_manager.get_pretrained_model(model_identifier='Sentinel2_Resnet50_SI_RGB',device='cpu')
     
-    # # for name,module in model.named_children():
-    # #     print(name)
+    # # # for name,module in model.named_children():
+    # # #     print(name)
     train(model=model,epochs=epochs,lr=lr,batch_size=batch_size,decay=l2_decay,train_data=train_dataset,test_data=test_dataset)
     
