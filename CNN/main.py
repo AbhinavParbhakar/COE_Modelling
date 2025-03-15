@@ -5,6 +5,7 @@ from PIL import Image
 import pandas as pd
 import numpy as np
 import os
+from torchvision.transforms import ToTensor
 from sklearn.metrics import r2_score, mean_absolute_percentage_error
 import subprocess
 import sys
@@ -252,15 +253,18 @@ class CrossAttentionCNN(nn.Module):
         
 
 
-def convert_images_to_numpy(path:str)->np.ndarray:
+def convert_images_to_numpy(image_path:str,excel_path:str)->np.ndarray:
     """
     Converts the images stored under the given parameter path into one large ``numpy.ndarray`` object.
+    Uses the ordering of the inputs in the excel path to order the images in the outputted array.
     
     Parameters
     ----------
     
-    path : ``str``
+    image_path : ``str``
         Path of the folder containing images
+    excel_path : ``str``
+        Path of the address for the excel file
     
     Returns
     -------
@@ -268,57 +272,55 @@ def convert_images_to_numpy(path:str)->np.ndarray:
     ``numpy.ndarray``
         The numpy array containing the images
     """
-    absolute_path = os.path.abspath(path)
+    df = pd.read_csv(excel_path)
+    file_names = df['Estimation_point'].tolist()
+    absolute_path = os.path.abspath(image_path)
     nested_path_generator = os.walk(absolute_path)
-    image_paths = []
+    image_paths = None
     images_numpy = []
     
-    for dirpath,dirnames,filenames in nested_path_generator:
-        image_paths.extend([os.path.join(dirpath,name) for name in filenames])       
     
-    for image_path in image_paths:
-        image_array = np.float32(np.array(Image.open(image_path)))
-        images_numpy.append(image_array.reshape((3,image_array.shape[0],image_array.shape[1])))
+    for dirpath,dirnames,filenames in nested_path_generator:
+        image_paths = {name.split('.')[0] : os.path.join(dirpath,name) for name in filenames}  
+        
+    for file_name in file_names:
+        image_path = image_paths[str(file_name)]
+        image_array = np.array(Image.open(image_path))
+        images_numpy.append(image_array)
     
     return_numpy_array = np.array(images_numpy)
     return return_numpy_array
 
-def generate_target_values_numpy(excel_path:str,image_path:str)->np.ndarray:
+def generate_target_values_numpy(file_path:str)->np.ndarray:
     """
-    Create a ``numpy.ndarray`` containing parallel matched regression values for the images
-    included in the provided folder, matching based on name of image to the row in the excel file.
+    Create a ``numpy.ndarray`` containing the AAWDT values for each sample in the provided file
     
     Parameters
     ----------
-    excel_path : ``str``
-        The path of the excel file to be opened. Contains the regression values per Study ID.
-    image_path : ``str``
-        The path of the folder containing the images. Labled with study IDs.
+    file_path : ``str``
+        The path of the excel/csv file to be opened. Contains the regression values per Study ID.
     
     Returns
     -------
     ``numpy.ndarray``
         Numpy array corresponding to the target values matched with given images. 
     """
-    absolute_path = os.path.abspath(image_path)
-    df = pd.read_excel(excel_path)
-    nested_path_generator = os.walk(absolute_path)
-    image_id_array = []
-    regression_values = []
+    df = pd.read_csv(file_path)
+    regression_values = df['AAWDT'].values
     
-    for dirpath,dirnames,filenames in nested_path_generator:
-        image_id_array.extend([name.split('.')[0] for name in filenames])
-        
-    for image_id in image_id_array:
-        values = df['AAWDT'][df['Estimation_point'] == int(image_id)].values
-        regression_values.append(values[-1])
-    
-    return np.array(regression_values).reshape((-1,1)).astype(np.float32)
+    return regression_values.reshape((-1,1)).astype(np.float32)
 
 class ImageDataset(Dataset):
     def __init__(self,coarse_images:np.ndarray,granular_images:np.ndarray,targets:np.ndarray):
-        self.coarse_images = torch.from_numpy(coarse_images)
-        self.granular_images = torch.from_numpy(granular_images)
+        transformed_coarse_images = []
+        transformed_granular_images = []
+        for image in coarse_images:
+            transformed_coarse_images.append(ToTensor()(image).unsqueeze(dim=0))
+        for image in granular_images:
+            transformed_granular_images.append(ToTensor()(image).unsqueeze(dim=0))
+        self.coarse_images = torch.cat(transformed_coarse_images,dim=0)
+        self.granular_images = torch.cat(transformed_granular_images,dim=0)
+        
         self.y = torch.from_numpy(targets)
         
     def __len__(self):
@@ -419,27 +421,27 @@ if __name__ == "__main__":
     if os_name == 'nt':
         coarse_image_path = "./data/coarse images"
         granular_image_path = './data/granular images'
-        excel_path = './data/excel_files/base_data.xlsx'
+        excel_path = './data/excel_files/duplicates_removed.csv'
     else:
         coarse_image_path = "/kaggle/input/coe-cnn-Experiment/coarse images"
         granular_image_path = "/kaggle/input/coe-cnn-Experiment/granular images"
-        excel_path = "/kaggle/input/coe-cnn-Experiment/base_data.xlsx"
+        excel_path = "/kaggle/input/coe-cnn-Experiment/duplicates_removed.csv"
     
     
     # Hyper parameters
-    epochs = 100
-    lr = 0.0005
-    batch_size = 14
+    epochs = 200
+    lr = 0.005
+    batch_size = 10
     l2_decay = 0.0005
     training_split = 0.85
     model = CrossAttentionCNN()
     
     # Load data
-    granular_images_ndarray = convert_images_to_numpy(path=granular_image_path)
+    granular_images_ndarray = convert_images_to_numpy(image_path=granular_image_path, excel_path=excel_path)
     
-    coarse_images_ndarray = convert_images_to_numpy(path=coarse_image_path)
+    coarse_images_ndarray = convert_images_to_numpy(image_path=coarse_image_path, excel_path=excel_path)
     
-    aawdt_ndarray = generate_target_values_numpy(excel_path=excel_path,image_path=granular_image_path)
+    aawdt_ndarray = generate_target_values_numpy(file_path=excel_path)
  
     # Shuffle data
     np.random.seed(0)
@@ -465,12 +467,12 @@ if __name__ == "__main__":
     test_dataset = ImageDataset(coarse_images=coarse_test,granular_images=granular_test,targets=aawdt_test)
     
     
-    # test_dataset = ImageDataset(images=x_test,targets=y_test)
-    # # model = GranularCNN()
-    # weights_manager = satlaspretrain_models.Weights()
-    # # model = weights_manager.get_pretrained_model(model_identifier='Sentinel2_Resnet50_SI_RGB',device='cpu')
+    # # test_dataset = ImageDataset(images=x_test,targets=y_test)
+    # # # model = GranularCNN()
+    # # weights_manager = satlaspretrain_models.Weights()
+    # # # model = weights_manager.get_pretrained_model(model_identifier='Sentinel2_Resnet50_SI_RGB',device='cpu')
     
-    # # for name,module in model.named_children():
-    # #     print(name)
+    # # # for name,module in model.named_children():
+    # # #     print(name)
     train(model=model,epochs=epochs,lr=lr,batch_size=batch_size,decay=l2_decay,train_data=train_dataset,test_data=test_dataset)
     
