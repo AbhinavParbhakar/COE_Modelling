@@ -5,7 +5,9 @@ from PIL import Image
 import pandas as pd
 import numpy as np
 import os
+import matplotlib.pyplot as plt
 from torchvision.transforms import ToTensor
+from torchvision.transforms.functional import rotate
 from sklearn.metrics import r2_score, mean_absolute_percentage_error
 import subprocess
 import sys
@@ -249,9 +251,18 @@ class CrossAttentionCNN(nn.Module):
         return attention_scores
         
 
-        
-        
-
+def create_graph(x_values:tuple,y_values:list,title:str,xlabel:str,ylabel:str):
+    """
+    Given the graph details, plot the graph and save it under ``<title>.png``
+    """
+    plt.figure(figsize=(10,6))
+    plt.plot(x_values,y_values,"ro-",)
+    plt.xlabel('Epochs')
+    plt.ylabel('MAE Score')
+    plt.legend()
+    plt.grid(visible=True,color='k')
+    plt.title("Training and Validation MAE")
+    plt.savefig(f'NN_mae_scores.png')
 
 def convert_images_to_numpy(image_path:str,excel_path:str)->np.ndarray:
     """
@@ -311,23 +322,36 @@ def generate_target_values_numpy(file_path:str)->np.ndarray:
     return regression_values.reshape((-1,1)).astype(np.float32)
 
 class ImageDataset(Dataset):
-    def __init__(self,coarse_images:np.ndarray,granular_images:np.ndarray,targets:np.ndarray):
-        transformed_coarse_images = []
-        transformed_granular_images = []
-        for image in coarse_images:
-            transformed_coarse_images.append(ToTensor()(image).unsqueeze(dim=0))
-        for image in granular_images:
-            transformed_granular_images.append(ToTensor()(image).unsqueeze(dim=0))
-        self.coarse_images = torch.cat(transformed_coarse_images,dim=0)
-        self.granular_images = torch.cat(transformed_granular_images,dim=0)
+    def __init__(self,coarse_images:np.ndarray,granular_images:np.ndarray,targets:np.ndarray,train=False):
+        self.coarse_images = self.generate_tensor_from_numpy(coarse_images,train=train)
+        self.granular_images = self.generate_tensor_from_numpy(granular_images,train=train)
         
-        self.y = torch.from_numpy(targets)
+        if train:
+            # Training data augmented
+            self.y = torch.from_numpy(targets.repeat(4,axis=0))
+        else:
+            self.y = torch.from_numpy(targets)
+    
+    def generate_tensor_from_numpy(self,array:np.ndarray,train=False)->torch.FloatTensor:
+        images = []
+        for image in array:
+            images.append(ToTensor()(image).unsqueeze(dim=0))
+            if train:
+                # Generate augmented rotations at intervals of 90 degrees
+                image1 = rotate(img=ToTensor()(image),angle=90).unsqueeze(dim=0)
+                image2 = rotate(img=ToTensor()(image),angle=180).unsqueeze(dim=0)
+                image3 = rotate(img=ToTensor()(image),angle=270).unsqueeze(dim=0)
+                images.extend([image1,image2,image3])
         
+        return torch.cat(images,dim=0)
+    
     def __len__(self):
         return self.coarse_images.shape[0]
 
     def __getitem__(self, index):
         return self.coarse_images[index], self.granular_images[index], self.y[index]
+    
+
 
 def train(model:nn.Module,epochs:int,lr:float,batch_size:int,decay:float,train_data:Dataset,test_data:Dataset)->None:
     """
@@ -474,5 +498,5 @@ if __name__ == "__main__":
     
     # # # for name,module in model.named_children():
     # # #     print(name)
-    train(model=model,epochs=epochs,lr=lr,batch_size=batch_size,decay=l2_decay,train_data=train_dataset,test_data=test_dataset)
+    # train(model=model,epochs=epochs,lr=lr,batch_size=batch_size,decay=l2_decay,train_data=train_dataset,test_data=test_dataset)
     
