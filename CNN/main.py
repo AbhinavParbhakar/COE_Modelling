@@ -322,16 +322,17 @@ def generate_target_values_numpy(file_path:str)->np.ndarray:
     return regression_values.reshape((-1,1)).astype(np.float32)
 
 class ImageDataset(Dataset):
-    def __init__(self,coarse_images:np.ndarray,granular_images:np.ndarray,targets:np.ndarray,train=False):
-        self.coarse_images = self.generate_tensor_from_numpy(coarse_images,train=train)
-        self.granular_images = self.generate_tensor_from_numpy(granular_images,train=train)
-        
+    def __init__(self,coarse_images:np.ndarray,granular_images:np.ndarray,targets:np.ndarray,train=False):        
         if train:
             # Training data augmented
-            self.y = torch.from_numpy(targets.repeat(4,axis=0))
+            self.coarse_images = self.generate_tensor_from_numpy(coarse_images,train=train)
+            self.granular_images = self.generate_tensor_from_numpy(granular_images,train=train)
+            self.y = torch.from_numpy(targets.repeat(4,axis=0)).float()
         else:
-            self.y = torch.from_numpy(targets)
-    
+            self.coarse_images = torch.from_numpy(coarse_images).permute(0,3,1,2) / 255
+            self.granular_images = torch.from_numpy(granular_images).permute(0,3,1,2) / 255
+            self.y = torch.from_numpy(targets).float()
+        
     def generate_tensor_from_numpy(self,array:np.ndarray,train=False)->torch.FloatTensor:
         images = []
         for image in array:
@@ -486,7 +487,7 @@ if __name__ == "__main__":
     
     aawdt_train, aawdt_test = aawdt_ndarray[:training_split_index],aawdt_ndarray[training_split_index:]
     
-    train_dataset = ImageDataset(coarse_images=coarse_train,granular_images=granular_train,targets=aawdt_train)
+    train_dataset = ImageDataset(coarse_images=coarse_train,granular_images=granular_train,targets=aawdt_train, train=True)
     
     test_dataset = ImageDataset(coarse_images=coarse_test,granular_images=granular_test,targets=aawdt_test)
     
@@ -498,5 +499,5 @@ if __name__ == "__main__":
     
     # # # for name,module in model.named_children():
     # # #     print(name)
-    # train(model=model,epochs=epochs,lr=lr,batch_size=batch_size,decay=l2_decay,train_data=train_dataset,test_data=test_dataset)
+    train(model=model,epochs=epochs,lr=lr,batch_size=batch_size,decay=l2_decay,train_data=train_dataset,test_data=test_dataset)
     
