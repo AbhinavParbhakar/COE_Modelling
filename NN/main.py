@@ -165,8 +165,14 @@ def train(model: torch.nn.Module, epochs: int, lr: float, batch_size: int, decay
     train_mape_values = []
     valid_mape_values = []
     epochs_values = []
-    with open('training.txt', 'a') as file:
-        for i in range(epochs):
+    early_stop = False
+    
+    early_stopping_threshold = 10
+    early_stopping_index = 1
+    best_rmse = 400000
+    i = 0
+    with open('training.txt', 'w') as file:
+        while i < epochs and not early_stop:
             model.train()
             all_targets, all_preds = [], []
 
@@ -187,44 +193,51 @@ def train(model: torch.nn.Module, epochs: int, lr: float, batch_size: int, decay
             r2 = r2_score(all_targets, all_preds)
             mape = mean_absolute_percentage_error(all_targets, all_preds)
 
-            if i % (epochs // 10) == 0:
-                epochs_values.append(i)
-                train_rmse_values.append(training_loss)
-                train_mape_values.append(mape)
-                train_r2_values.append(r2)
-                file.write(f'\n---------------------------\nTraining Epoch: {i}\n')
-                file.write(f'r2 score is {r2:.3f}\n')
-                file.write(f'MAPE is {mape * 100:.2f}%\n')
-                file.write(f'RMSE is {training_loss:.3f}\n')
-                file.write('---------------------------\n')
+            epochs_values.append(i)
+            train_rmse_values.append(training_loss)
+            train_mape_values.append(mape*100)
+            train_r2_values.append(r2)
+            file.write(f'\n---------------------------\nTraining Epoch: {i}\n')
+            file.write(f'r2 score is {r2:.3f}\n')
+            file.write(f'MAPE is {mape * 100:.2f}%\n')
+            file.write(f'RMSE is {training_loss:.3f}\n')
+            file.write('---------------------------\n')
 
-            # Validation
-            if i % (epochs // 10) == 0:
-                model.eval()
-                valid_targets, valid_preds = [], []
+            model.eval()
+            valid_targets, valid_preds = [], []
+            with torch.no_grad():
+                for coarse_input, granular_input, target in test_loader:
+                    pred = model(coarse_input.to(device), granular_input.to(device))
+                    valid_targets.append(target.detach().cpu().numpy())
+                    valid_preds.append(pred.detach().cpu().numpy())
 
-                with torch.no_grad():
-                    for coarse_input, granular_input, target in test_loader:
-                        pred = model(coarse_input.to(device), granular_input.to(device))
-                        valid_targets.append(target.detach().cpu().numpy())
-                        valid_preds.append(pred.detach().cpu().numpy())
+            valid_targets = np.concatenate(valid_targets)
+            valid_preds = np.concatenate(valid_preds)
+            valid_loss = np.sqrt(mean_squared_error(valid_targets, valid_preds))
+            valid_r2 = r2_score(valid_targets, valid_preds)
+            valid_mape = mean_absolute_percentage_error(valid_targets, valid_preds)
+            
+            valid_mape_values.append(valid_mape * 100)
+            valid_rmse_values.append(valid_loss)
+            valid_r2_values.append(valid_r2)
+            
 
-                valid_targets = np.concatenate(valid_targets)
-                valid_preds = np.concatenate(valid_preds)
-                valid_loss = np.sqrt(mean_squared_error(valid_targets, valid_preds))
-                valid_r2 = r2_score(valid_targets, valid_preds)
-                valid_mape = mean_absolute_percentage_error(valid_targets, valid_preds)
-                
-                valid_mape_values.append(valid_mape)
-                valid_rmse_values.append(valid_loss)
-                valid_r2_values.append(valid_r2)
-                
-                file.write(f'\n---------------------------\nValidation Epoch: {i}\n')
-                file.write(f'r2 score is {valid_r2:.3f}\n')
-                file.write(f'MAPE is {valid_mape * 100:.2f}%\n')
-                file.write(f'RMSE is {valid_loss:.3f}\n')
-                file.write('---------------------------\n')
-    
+            file.write(f'\n---------------------------\nValidation Epoch: {i}\n')
+            file.write(f'r2 score is {valid_r2:.3f}\n')
+            file.write(f'MAPE is {valid_mape * 100:.2f}%\n')
+            file.write(f'RMSE is {valid_loss:.3f}\n')
+            file.write('---------------------------\n')
+            
+            # Early Stopping Mechanism
+            if valid_loss < best_rmse:
+                best_rmse = valid_loss
+                early_stopping_index = 1
+            else:
+                early_stopping_index += 1
+            
+            if early_stopping_index == early_stopping_threshold:
+                early_stop = True
+            i += 1    
     create_graph(epochs_values,[train_mape_values,valid_mape_values],"Multimodal Model MAPE","Epochs","MAPE (%)")
     create_graph(epochs_values,[train_rmse_values,valid_rmse_values],"Multimodal Model RMSE","Epochs","RMSE")
     create_graph(epochs_values,[train_r2_values,valid_r2_values],"Multimodal Model R2Score","Epochs","R2Score")
@@ -308,35 +321,43 @@ def preprocess_data(df:pd.DataFrame)->np.ndarray:
     
     return transform.fit_transform(df).astype(np.float32)
 
+def get_parametric_features(file_path:str)->np.ndarray:
+    """
+    Create a ``numpy.ndarray`` containing features.
+    
+    Parameters
+    ----------
+    excel_path : ``str``
+        The path of the excel file to be opened. Contains the regression values per Study ID.    
+    Returns
+    -------
+    ``numpy.ndarray``
+        Numpy array corresponding to corresponding features.
+    """
+    df = pd.read_csv(file_path)
+    df = df[['Latitude','Longitude','Road_Class','Speed']]
+    
+    features = preprocess_data(df)
+    return features
 
-def generate_target_values_numpy(excel_path:str)->tuple[np.ndarray, np.ndarray]:
+def get_regression_values(file_path:str)->np.ndarray:
     """
     Create a ``numpy.ndarray`` containing parallel matched regression values for the images.
     
     Parameters
     ----------
     excel_path : ``str``
-        The path of the excel file to be opened. Contains the regression values per Study ID.
-    image_path : ``str``
-        The path of the folder containing the images. Labled with study IDs.
-    use_shortened_version : ``bool``
-        (Default ``False``), If ``True``, then the internal dict storing the ids that Mingjian provided is used
-    
+        The path of the excel file to be opened. Contains the regression values per Study ID.    
     Returns
     -------
-    ``tuple[numpy.ndarray, numpy.ndarray]``
-        Tuple of numpy array corresponding to corresponding features and the target values matched with given images. 
+    ``numpy.ndarray``
+        Tuple of numpy array corresponding to target values matched with given images. 
     """
-    df = pd.read_csv(excel_path)
+    df = pd.read_csv(file_path)
     
     targets = df['AAWDT'].values
     targets = targets.reshape((-1,1))
-    df = df[['Latitude','Longitude','Road_Class','Speed']]
-    
-    features = preprocess_data(df)
-    
-    return features, targets.astype(np.float32)
-
+    return targets.astype(np.float32)
 
     
 if __name__ == "__main__":
@@ -353,9 +374,10 @@ if __name__ == "__main__":
         excel_file_path = './data/excel_files/duplicates_removed.csv'
         
     images_ndarray = convert_images_to_numpy(granular_image_path,excel_file_path)
-    parametric_features,targets = generate_target_values_numpy(excel_file_path,)
+    parametric_features = get_parametric_features(excel_file_path)
+    targets = get_regression_values(excel_file_path)
     
-
+    np.random.seed(0)
     ordering = permutation(parametric_features.shape[0])
     
     shuffled_images = images_ndarray[ordering]

@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader,Dataset
+from torch.utils.data import DataLoader,Dataset, TensorDataset
 from PIL import Image
 import pandas as pd
 import numpy as np
@@ -10,6 +10,8 @@ from torchvision.transforms import ToTensor
 from torchvision.transforms.functional import rotate
 from sklearn.metrics import r2_score, mean_absolute_percentage_error, mean_squared_error
 import subprocess
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder,StandardScaler
 import sys
 
 # Check if running on Kaggle and install dependencies if not already installed
@@ -23,7 +25,10 @@ if "KAGGLE_KERNEL_RUN_TYPE" in os.environ:
 
 from torchgeo.models import resnet18,ResNet18_Weights
 
-torch.manual_seed(25)
+seed = 42
+np.random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed_all(seed)
 
 class FinetunedModel(nn.Module):
     def __init__(self,):
@@ -67,6 +72,30 @@ class FinetunedModel(nn.Module):
         
         return output
 
+class NN(nn.Module):
+    def __init__(self):
+        super().__init__()
+        
+        self.net = nn.Sequential(
+            nn.Linear(7,64),
+            nn.ReLU(),
+            
+            nn.Linear(64,128),
+            nn.ReLU(),
+            
+            nn.Linear(128,256),
+            nn.ReLU(),
+            
+            nn.Linear(256,512),
+            nn.ReLU(),
+            
+        )
+    
+    def forward(self,x):
+        x = self.net(x)
+        
+        return x
+
 class CrossAttentionCNN(nn.Module):
     def __init__(self, hidden_size = 500,output_size=1000):
         super().__init__()
@@ -76,6 +105,7 @@ class CrossAttentionCNN(nn.Module):
         self.avg_pool = nn.AvgPool2d(kernel_size=2)
         self.flatten = nn.Flatten()
         self.relu = nn.ReLU()
+        self.parametric = NN()
         
         # Based on the paper I read, make such that both dimesions are roughly the same
         # Based on the ResNet-18 architecture.
@@ -202,13 +232,15 @@ class CrossAttentionCNN(nn.Module):
         self.w_v = nn.Linear(in_features=540,out_features=output_size,bias=False)
         self.softmax = nn.Softmax(dim=1)
         
-        self.fc1 = nn.Linear(in_features=1500,out_features=500)
+        self.dropout = nn.Dropout()
+        
+        self.fc1 = nn.Linear(in_features=2012,out_features=500)
         self.fc2 = nn.Linear(in_features=500,out_features=200)
         self.fc3 = nn.Linear(in_features=200,out_features=50)
         self.fc4 = nn.Linear(in_features=50,out_features=1)
     
         
-    def forward(self,coarse_input:torch.FloatTensor,granular_input:torch.FloatTensor):
+    def forward(self,coarse_input:torch.FloatTensor,granular_input:torch.FloatTensor,parametric_input):
         # Process coarse input
         x1_layer_2_input = self.coarse_layer_1(coarse_input)
         
@@ -263,11 +295,15 @@ class CrossAttentionCNN(nn.Module):
         
         coarse_image_embedding = self.flatten(x1)
         granular_image_embedding = self.flatten(x2)
-        
+        parametric_embeddings = self.parametric(parametric_input)
+        parametric_embeddings = self.relu(parametric_embeddings)
         # attention_scores = self.cross_attention(main_vector=granular_image_embedding,cross_vector=coarse_image_embedding,hidden_size=self.hidden_size,output_size=self.output_size)
-        combination = torch.cat(tensors=(coarse_image_embedding,granular_image_embedding),dim=1)
+        combination = torch.cat(tensors=(coarse_image_embedding,granular_image_embedding,parametric_embeddings),dim=1)
+        combination = self.dropout(combination)
+        
         output = self.fc1(combination)
         output = self.relu(output)
+        output = self.dropout(output)
         output = self.fc2(output)
         output = self.relu(output)
         output = self.fc3(output)
@@ -311,6 +347,7 @@ def convert_images_to_numpy(image_path:str,excel_path:str)->np.ndarray:
         The numpy array containing the images
     """
     df = pd.read_csv(excel_path)
+    df = df.drop(df[df['Road_Class'] == 'Alley'].index,axis=0)
     file_names = df['Estimation_point'].tolist()
     absolute_path = os.path.abspath(image_path)
     nested_path_generator = os.walk(absolute_path)
@@ -322,7 +359,7 @@ def convert_images_to_numpy(image_path:str,excel_path:str)->np.ndarray:
         image_paths = {name.split('.')[0] : os.path.join(dirpath,name) for name in filenames}  
         
     for file_name in file_names:
-        image_path = image_paths[str(file_name)]
+        image_path = image_paths[str(int(file_name))]
         image_array = np.array(Image.open(image_path))
         images_numpy.append(image_array)
     
@@ -344,6 +381,7 @@ def generate_target_values_numpy(file_path:str)->np.ndarray:
         Numpy array corresponding to the target values matched with given images. 
     """
     df = pd.read_csv(file_path)
+    df = df.drop(df[df['Road_Class'] == 'Alley'].index,axis=0)
     regression_values = df['AAWDT'].values
     
     return regression_values.reshape((-1,1)).astype(np.float32)
@@ -394,14 +432,20 @@ def train(model: torch.nn.Module, epochs: int, lr: float, batch_size: int, decay
     train_mape_values = []
     valid_mape_values = []
     epochs_values = []
-    with open('training.txt', 'a') as file:
-        for i in range(epochs):
+    early_stop = False
+    
+    early_stopping_threshold = 20
+    early_stopping_index = 1
+    best_rmse = 400000
+    i = 0
+    with open('training.txt', 'w') as file:
+        while i < epochs and not early_stop:
             model.train()
             all_targets, all_preds = [], []
 
-            for coarse_input, granular_input, target in training_loader:
+            for coarse_input, granular_input, param_input, target in training_loader:
                 optim.zero_grad()
-                pred = model(coarse_input.to(device), granular_input.to(device))
+                pred = model(coarse_input.to(device), granular_input.to(device),param_input.to(device))
                 loss = torch.nn.functional.mse_loss(pred, target.to(device))
                 loss.backward()
                 optim.step()
@@ -416,48 +460,112 @@ def train(model: torch.nn.Module, epochs: int, lr: float, batch_size: int, decay
             r2 = r2_score(all_targets, all_preds)
             mape = mean_absolute_percentage_error(all_targets, all_preds)
 
-            if i % (epochs // 10) == 0:
-                epochs_values.append(i)
-                train_rmse_values.append(training_loss)
-                train_mape_values.append(mape)
-                train_r2_values.append(r2)
-                file.write(f'\n---------------------------\nTraining Epoch: {i}\n')
-                file.write(f'r2 score is {r2:.3f}\n')
-                file.write(f'MAPE is {mape * 100:.2f}%\n')
-                file.write(f'RMSE is {training_loss:.3f}\n')
-                file.write('---------------------------\n')
+            epochs_values.append(i)
+            train_rmse_values.append(training_loss)
+            train_mape_values.append(mape*100)
+            train_r2_values.append(r2)
+            file.write(f'\n---------------------------\nTraining Epoch: {i}\n')
+            file.write(f'r2 score is {r2:.3f}\n')
+            file.write(f'MAPE is {mape * 100:.2f}%\n')
+            file.write(f'RMSE is {training_loss:.3f}\n')
+            file.write('---------------------------\n')
 
-            # Validation
-            if i % (epochs // 10) == 0:
-                model.eval()
-                valid_targets, valid_preds = [], []
+            model.eval()
+            valid_targets, valid_preds = [], []
+            with torch.no_grad():
+                for coarse_input, granular_input, param_input, target in test_loader:
+                    pred = model(coarse_input.to(device), granular_input.to(device),param_input.to(device))
+                    valid_targets.append(target.detach().cpu().numpy())
+                    valid_preds.append(pred.detach().cpu().numpy())
 
-                with torch.no_grad():
-                    for coarse_input, granular_input, target in test_loader:
-                        pred = model(coarse_input.to(device), granular_input.to(device))
-                        valid_targets.append(target.detach().cpu().numpy())
-                        valid_preds.append(pred.detach().cpu().numpy())
+            valid_targets = np.concatenate(valid_targets)
+            valid_preds = np.concatenate(valid_preds)
+            valid_loss = np.sqrt(mean_squared_error(valid_targets, valid_preds))
+            valid_r2 = r2_score(valid_targets, valid_preds)
+            valid_mape = mean_absolute_percentage_error(valid_targets, valid_preds)
+            
+            valid_mape_values.append(valid_mape * 100)
+            valid_rmse_values.append(valid_loss)
+            valid_r2_values.append(valid_r2)
+            
 
-                valid_targets = np.concatenate(valid_targets)
-                valid_preds = np.concatenate(valid_preds)
-                valid_loss = np.sqrt(mean_squared_error(valid_targets, valid_preds))
-                valid_r2 = r2_score(valid_targets, valid_preds)
-                valid_mape = mean_absolute_percentage_error(valid_targets, valid_preds)
-                
-                valid_mape_values.append(valid_mape)
-                valid_rmse_values.append(valid_loss)
-                valid_r2_values.append(valid_r2)
-                
-                file.write(f'\n---------------------------\nValidation Epoch: {i}\n')
-                file.write(f'r2 score is {valid_r2:.3f}\n')
-                file.write(f'MAPE is {valid_mape * 100:.2f}%\n')
-                file.write(f'RMSE is {valid_loss:.3f}\n')
-                file.write('---------------------------\n')
+            file.write(f'\n---------------------------\nValidation Epoch: {i}\n')
+            file.write(f'r2 score is {valid_r2:.3f}\n')
+            file.write(f'MAPE is {valid_mape * 100:.2f}%\n')
+            file.write(f'RMSE is {valid_loss:.3f}\n')
+            file.write('---------------------------\n')
+            
+            # Early Stopping Mechanism
+            if valid_loss < best_rmse:
+                best_rmse = valid_loss
+                early_stopping_index = 1
+            else:
+                early_stopping_index += 1
+            
+            if early_stopping_index == early_stopping_threshold:
+                early_stop = True
+            i += 1
     
-    create_graph(epochs_values,[train_mape_values,valid_mape_values],"Multimodal Model MAPE","Epochs","MAPE (%)")
-    create_graph(epochs_values,[train_rmse_values,valid_rmse_values],"Multimodal Model RMSE","Epochs","RMSE")
-    create_graph(epochs_values,[train_r2_values,valid_r2_values],"Multimodal Model R2Score","Epochs","R2Score")
+    create_graph(epochs_values,[train_mape_values,valid_mape_values],"Multimodal MAPE","Epochs","MAPE (%)")
+    create_graph(epochs_values,[train_rmse_values,valid_rmse_values],"Multimodal RMSE","Epochs","RMSE")
+    create_graph(epochs_values,[train_r2_values,valid_r2_values],"Multimodal R2Score","Epochs","R2Score")
+    create_graph([i + 1 for i in range(valid_targets.shape[0])],y_values=[valid_targets.reshape(valid_targets.shape[0]),valid_preds.reshape(valid_preds.shape[0])],title="Ground truth (Training Line) vs Predictions (Validation Line)",xlabel="Data Point",ylabel="AAWDT")
+
+def preprocess_data(df:pd.DataFrame)->np.ndarray:
+    """
+    Using the given data frame containing the information for studies, apply StandardScaling for 
+    the 'Lat, Long, Speed' columns. Apply OneHotEncoding for the 'roadclass, land usage' columns. 
     
+    Then return the output as a nd.ndarray 
+    """
+    transform = ColumnTransformer(transformers=[
+        ('Standard Scale',StandardScaler(),['Latitude','Longitude','Speed',]),
+        ('One Hot Encode',OneHotEncoder(),['Road_Class'])
+    ])
+    
+    return transform.fit_transform(df).astype(np.float32)
+
+def get_parametric_features(file_path:str)->np.ndarray:
+    """
+    Create a ``numpy.ndarray`` containing features.
+    
+    Parameters
+    ----------
+    excel_path : ``str``
+        The path of the excel file to be opened. Contains the regression values per Study ID.    
+    Returns
+    -------
+    ``numpy.ndarray``
+        Numpy array corresponding to corresponding features.
+    """
+    df = pd.read_csv(file_path)
+    target_cols =  ['Latitude','Longitude','Road_Class','Speed',
+    ]
+
+    df = df.drop(df[df['Road_Class'] == 'Alley'].index,axis=0)
+    df = df[target_cols]
+    
+    features = preprocess_data(df)
+    return features
+
+def get_regression_values(file_path:str)->np.ndarray:
+    """
+    Create a ``numpy.ndarray`` containing parallel matched regression values for the images.
+    
+    Parameters
+    ----------
+    excel_path : ``str``
+        The path of the excel file to be opened. Contains the regression values per Study ID.    
+    Returns
+    -------
+    ``numpy.ndarray``
+        Tuple of numpy array corresponding to target values matched with given images. 
+    """
+    df = pd.read_csv(file_path)
+    df = df.drop(df[df['Road_Class'] == 'Alley'].index,axis=0)
+    targets = df['AAWDT'].values
+    targets = targets.reshape((-1,1))
+    return targets.astype(np.float32)
 
 def create_graph(x_values:tuple,y_values:list[list],title:str,xlabel:str,ylabel:str):
     """
@@ -499,10 +607,10 @@ if __name__ == "__main__":
     
     
     # Hyper parameters
-    epochs = 50
+    epochs = 200
     lr = 0.0005
     batch_size = 16
-    l2_decay = 0.005
+    l2_decay = 0.05
     training_split = 0.85
     model = CrossAttentionCNN()
     
@@ -511,10 +619,12 @@ if __name__ == "__main__":
     
     coarse_images_ndarray = convert_images_to_numpy(image_path=coarse_image_path, excel_path=excel_path)
     
-    aawdt_ndarray = generate_target_values_numpy(file_path=excel_path)
+    parametric_features_ndarray = get_parametric_features(file_path=excel_path)
+    
+    
+    aawdt_ndarray = get_regression_values(file_path=excel_path)
  
     # Shuffle data
-    np.random.seed(0)
     random_permutation = np.random.permutation(granular_images_ndarray.shape[0])
     
     granular_images_ndarray = granular_images_ndarray[random_permutation]
@@ -523,18 +633,29 @@ if __name__ == "__main__":
     
     aawdt_ndarray = aawdt_ndarray[random_permutation]
     
+    parametric_features_ndarray = parametric_features_ndarray[random_permutation]
+    
     # Split data
     training_split_index = int(granular_images_ndarray.shape[0] * training_split)
     
-    granular_train, coarse_train = granular_images_ndarray[:training_split_index],coarse_images_ndarray[:training_split_index]
+    granular_train, coarse_train, param_train = granular_images_ndarray[:training_split_index],coarse_images_ndarray[:training_split_index], parametric_features_ndarray[:training_split_index]
     
-    granular_test, coarse_test = granular_images_ndarray[training_split_index:],coarse_images_ndarray[training_split_index:]
+    granular_test, coarse_test, param_test = granular_images_ndarray[training_split_index:],coarse_images_ndarray[training_split_index:], parametric_features_ndarray[training_split_index:]
     
     aawdt_train, aawdt_test = aawdt_ndarray[:training_split_index],aawdt_ndarray[training_split_index:]
     
-    train_dataset = ImageDataset(coarse_images=coarse_train,granular_images=granular_train,targets=aawdt_train,)
-    
-    test_dataset = ImageDataset(coarse_images=coarse_test,granular_images=granular_test,targets=aawdt_test)
+    train_dataset = TensorDataset(
+        torch.from_numpy(coarse_train).permute(0,3,1,2) / 255,
+        torch.from_numpy(granular_train).permute(0,3,1,2) / 255,
+        torch.from_numpy(param_train),
+        torch.from_numpy(aawdt_train)
+        )
+    test_dataset = TensorDataset(
+        torch.from_numpy(coarse_test).permute(0,3,1,2) / 255,
+        torch.from_numpy(granular_test).permute(0,3,1,2) / 255,
+        torch.from_numpy(param_test),
+        torch.from_numpy(aawdt_test)
+        )
     
     
     train(model=model,epochs=epochs,lr=lr,batch_size=batch_size,decay=l2_decay,train_data=train_dataset,test_data=test_dataset)

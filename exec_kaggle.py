@@ -1,12 +1,13 @@
 import os
 import time
 import json
+import sys
 
-def run_model(model_name="GNN"):
+def run_model(model_name="CNN"):
     """
     Run the model based on the model name
     
-    model_name = "GNN" or "NN"
+    model_name = "CNN" or "NN" or "GNN"
     """
     metadata = json.load(open(f'./{model_name}/kernel-metadata.json'))
     print(metadata)
@@ -28,6 +29,8 @@ def run_model(model_name="GNN"):
     os.system(f'kaggle kernels output {id} -p ./data/output/{model_name}')
     
 if __name__ == "__main__":
-    run_model(model_name="CNN")
+    arguments = sys.argv
+    model_name = sys.argv[1]
+    run_model(model_name=model_name)
     
 
