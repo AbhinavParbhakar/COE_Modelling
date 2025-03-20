@@ -8,7 +8,7 @@ import os
 import matplotlib.pyplot as plt
 from torchvision.transforms import ToTensor
 from torchvision.transforms.functional import rotate
-from sklearn.metrics import r2_score, mean_absolute_percentage_error
+from sklearn.metrics import r2_score, mean_absolute_percentage_error, mean_squared_error
 import subprocess
 import sys
 
@@ -28,7 +28,7 @@ torch.manual_seed(25)
 class FinetunedModel(nn.Module):
     def __init__(self,):
         super().__init__()
-        self.pretrained = resnet18(ResNet18_Weights.SENTINEL2_RGB_SECO)
+        self.pretrained = resnet18(ResNet18_Weights.SENTINEL2_RGB_MOCO)
         
         
         for parameter in self.pretrained.parameters():
@@ -38,27 +38,30 @@ class FinetunedModel(nn.Module):
         self.processes_one = nn.Linear(in_features=1000,out_features=300)
         self.processes_two = nn.Linear(in_features=1000,out_features=300)
         self.fc1 = nn.Linear(in_features=600,out_features=200)
-        self.bn1 = nn.BatchNorm1d(num_features=200)
         self.fc2 = nn.Linear(in_features=200,out_features=50)
-        self.bn2 = nn.BatchNorm1d(num_features=50)
         self.fc3 = nn.Linear(in_features=50,out_features=1)
+        
+        self.dropout = nn.Dropout1d()
 
         
-        
-    
     def forward(self,coarse_input:torch.FloatTensor,granular_input:torch.FloatTensor):
-        coarse_input = self.pretrained(coarse_input)
-        granular_input = self.pretrained(granular_input)
+        coarse_input = self.relu(self.pretrained(coarse_input))
+        granular_input = self.relu(self.pretrained(granular_input))
         
-        coarse_input = self.relu(self.processes_one(coarse_input))
-        granular_input = self.relu(self.processes_two(granular_input))
+        coarse_input = self.dropout(coarse_input)
+        coarse_input = self.processes_one(coarse_input)
+        coarse_input = self.relu(coarse_input)
+        
+        granular_input = self.dropout(granular_input)
+        granular_input = self.processes_two(granular_input)
+        granular_input = self.relu(granular_input)
+        
         
         combination = torch.cat((coarse_input,granular_input),dim=1)
+        
         output = self.fc1(combination)
-        output = self.bn1(output)
         output = self.relu(output)
         output = self.fc2(output)
-        output = self.bn2(output)
         output = self.relu(output)
         output = self.fc3(output)
         
@@ -287,20 +290,6 @@ class CrossAttentionCNN(nn.Module):
         attention_scores = torch.mm(attention,V)
         
         return attention_scores
-        
-
-def create_graph(x_values:tuple,y_values:list,title:str,xlabel:str,ylabel:str):
-    """
-    Given the graph details, plot the graph and save it under ``<title>.png``
-    """
-    plt.figure(figsize=(10,6))
-    plt.plot(x_values,y_values,"ro-",)
-    plt.xlabel('Epochs')
-    plt.ylabel('MAE Score')
-    plt.legend()
-    plt.grid(visible=True,color='k')
-    plt.title("Training and Validation MAE")
-    plt.savefig(f'NN_mae_scores.png')
 
 def convert_images_to_numpy(image_path:str,excel_path:str)->np.ndarray:
     """
@@ -392,91 +381,109 @@ class ImageDataset(Dataset):
     
 
 
-def train(model:nn.Module,epochs:int,lr:float,batch_size:int,decay:float,train_data:Dataset,test_data:Dataset)->None:
-    """
-    Train the provided model based on the hyperparameters given. This function
-    utilizes the ``torch.optim.Adam`` optimizer internally for backpropogation.
-    
-    Parameters
-    ----------
-    model : ``torch.nn.Module``
-        The model to be trained
-    epochs : ``int``
-        The number of iterations to apply during training.
-    lr : ``float``
-        The learning rate to apply during gradient descent.
-    batch_size : ``int``
-        Batch size to use during training.
-    decary : ``float``
-        The L2 regularization to apply during training
-    train_data : ``torch.utils.Dataset``
-        Training data
-    test_data : ``torch.utils.Dataset``
-        Test data
-    """
+def train(model: torch.nn.Module, epochs: int, lr: float, batch_size: int, decay: float, train_data, test_data,validation_frequency=10):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    model = model.to(device=device)
-    optim = torch.optim.Adam(model.parameters(),lr=lr,weight_decay=decay)
-    training_loader = DataLoader(dataset=train_data,batch_size=batch_size)
-    test_loader = DataLoader(dataset=test_data,batch_size=batch_size)
-    with open('training.txt','w') as file:
+    model = model.to(device)
+    optim = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=decay)
+    training_loader = DataLoader(dataset=train_data, batch_size=batch_size)
+    test_loader = DataLoader(dataset=test_data, batch_size=batch_size)
+    train_r2_values = []
+    valid_r2_values = []
+    train_rmse_values = []
+    valid_rmse_values = []
+    train_mape_values = []
+    valid_mape_values = []
+    epochs_values = []
+    with open('training.txt', 'a') as file:
         for i in range(epochs):
             model.train()
-        
-            training_loss = 0 # rmse
-            r2 = 0
-            mape = 0
-            for coarse_input,granular_input, target in training_loader:
+            all_targets, all_preds = [], []
+
+            for coarse_input, granular_input, target in training_loader:
                 optim.zero_grad()
-                coarse_input = coarse_input.to(device)
-                granular_input = granular_input.to(device)
-                target = target.to(device)
-                pred = model(coarse_input,granular_input)
-                loss = torch.nn.functional.mse_loss(pred,target)
-                training_loss += loss.item() ** (0.5)
-                r2 += r2_score(y_true=target.numpy(force=True),y_pred=pred.numpy(force=True))
-                mape += mean_absolute_percentage_error(y_true=target.numpy(force=True),y_pred=pred.numpy(force=True))
+                pred = model(coarse_input.to(device), granular_input.to(device))
+                loss = torch.nn.functional.mse_loss(pred, target.to(device))
                 loss.backward()
                 optim.step()
-                
-            if i % int(epochs/10) == 0:
-                training_loss = training_loss/len(training_loader)
-                r2 = r2/len(training_loader)
-                mape = mape/len(training_loader)
-                file.write('\n---------------------------\n')
-                file.write(f'Training Epoch: {i}\n')
+
+                all_targets.append(target.detach().cpu().numpy())
+                all_preds.append(pred.detach().cpu().numpy())
+
+            # Compute metrics after epoch
+            all_targets = np.concatenate(all_targets)
+            all_preds = np.concatenate(all_preds)
+            training_loss = np.sqrt(mean_squared_error(all_targets, all_preds))
+            r2 = r2_score(all_targets, all_preds)
+            mape = mean_absolute_percentage_error(all_targets, all_preds)
+
+            if i % (epochs // 10) == 0:
+                epochs_values.append(i)
+                train_rmse_values.append(training_loss)
+                train_mape_values.append(mape)
+                train_r2_values.append(r2)
+                file.write(f'\n---------------------------\nTraining Epoch: {i}\n')
                 file.write(f'r2 score is {r2:.3f}\n')
                 file.write(f'MAPE is {mape * 100:.2f}%\n')
                 file.write(f'RMSE is {training_loss:.3f}\n')
                 file.write('---------------------------\n')
-            
-            if i % int(epochs/10) == 0:
-                valid_loss = 0 # rmse
-                valid_r2 = 0
-                valid_mape = 0
-                for coarse_input,granular_input, target in test_loader:
-                    with torch.no_grad():
-                        coarse_input = coarse_input.to(device)
-                        granular_input = granular_input.to(device)
-                        target = target.to(device)
-                        pred = model(coarse_input,granular_input)
-                        loss = torch.nn.functional.mse_loss(pred,target)
-                        valid_loss += loss.item() ** (0.5)
-                        valid_r2 += r2_score(y_true=target.numpy(force=True),y_pred=pred.numpy(force=True))
-                        valid_mape += mean_absolute_percentage_error(y_true=target.numpy(force=True),y_pred=pred.numpy(force=True))
-                    
-                valid_loss = valid_loss/len(test_loader)
-                valid_r2 = valid_r2/len(test_loader)
-                valid_mape = valid_mape/len(test_loader)
-                file.write('\n---------------------------\n')
-                file.write(f'Validation Epoch: {i}\n')
+
+            # Validation
+            if i % (epochs // 10) == 0:
+                model.eval()
+                valid_targets, valid_preds = [], []
+
+                with torch.no_grad():
+                    for coarse_input, granular_input, target in test_loader:
+                        pred = model(coarse_input.to(device), granular_input.to(device))
+                        valid_targets.append(target.detach().cpu().numpy())
+                        valid_preds.append(pred.detach().cpu().numpy())
+
+                valid_targets = np.concatenate(valid_targets)
+                valid_preds = np.concatenate(valid_preds)
+                valid_loss = np.sqrt(mean_squared_error(valid_targets, valid_preds))
+                valid_r2 = r2_score(valid_targets, valid_preds)
+                valid_mape = mean_absolute_percentage_error(valid_targets, valid_preds)
+                
+                valid_mape_values.append(valid_mape)
+                valid_rmse_values.append(valid_loss)
+                valid_r2_values.append(valid_r2)
+                
+                file.write(f'\n---------------------------\nValidation Epoch: {i}\n')
                 file.write(f'r2 score is {valid_r2:.3f}\n')
                 file.write(f'MAPE is {valid_mape * 100:.2f}%\n')
                 file.write(f'RMSE is {valid_loss:.3f}\n')
                 file.write('---------------------------\n')
-                
-        
+    
+    create_graph(epochs_values,[train_mape_values,valid_mape_values],"Multimodal Model MAPE","Epochs","MAPE (%)")
+    create_graph(epochs_values,[train_rmse_values,valid_rmse_values],"Multimodal Model RMSE","Epochs","RMSE")
+    create_graph(epochs_values,[train_r2_values,valid_r2_values],"Multimodal Model R2Score","Epochs","R2Score")
+    
+
+def create_graph(x_values:tuple,y_values:list[list],title:str,xlabel:str,ylabel:str):
+    """
+    Given the graph details, plot the graph and save it under ``<title>.png``. ENSURE THAT THE TRAINING Y VALUES ARE PLACED FIRST
+    """
+    plt.figure(figsize=(10,6))
+    plot_config = {
+        0 : {
+            'color':'darkorange',
+            'marker' : 'd',
+            'label':'Training'
+        },
+        1 : {
+            'color':'seagreen',
+            'marker' : 'd',
+            'label':'Validation'
+        }
+    }
+    for i,labels in enumerate(y_values):
+        plt.plot(x_values,labels,color=plot_config[i]['color'],marker=plot_config[i]['marker'],label=plot_config[i]['label'])
+    plt.xlabel(xlabel)
+    plt.ylabel(ylabel)
+    plt.legend()
+    plt.grid(visible=True,)
+    plt.title(title)
+    plt.savefig(f'{title}.png')        
     
 
 if __name__ == "__main__":
@@ -492,12 +499,12 @@ if __name__ == "__main__":
     
     
     # Hyper parameters
-    epochs = 100
+    epochs = 50
     lr = 0.0005
     batch_size = 16
     l2_decay = 0.005
     training_split = 0.85
-    model = FinetunedModel()
+    model = CrossAttentionCNN()
     
     # Load data
     granular_images_ndarray = convert_images_to_numpy(image_path=granular_image_path, excel_path=excel_path)
@@ -530,12 +537,5 @@ if __name__ == "__main__":
     test_dataset = ImageDataset(coarse_images=coarse_test,granular_images=granular_test,targets=aawdt_test)
     
     
-    # # test_dataset = ImageDataset(images=x_test,targets=y_test)
-    # # # model = GranularCNN()
-    # # weights_manager = satlaspretrain_models.Weights()
-    # # # model = weights_manager.get_pretrained_model(model_identifier='Sentinel2_Resnet50_SI_RGB',device='cpu')
-    
-    # # # for name,module in model.named_children():
-    # # #     print(name)
     train(model=model,epochs=epochs,lr=lr,batch_size=batch_size,decay=l2_decay,train_data=train_dataset,test_data=test_dataset)
     
