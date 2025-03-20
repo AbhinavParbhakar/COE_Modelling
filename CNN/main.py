@@ -12,19 +12,57 @@ from sklearn.metrics import r2_score, mean_absolute_percentage_error
 import subprocess
 import sys
 
-# # Check if running on Kaggle and install dependencies if not already installed
-# if "KAGGLE_KERNEL_RUN_TYPE" in os.environ:
-#     print("Started download for pytorch_geometric")
-#     import torch
-#     version = torch.__version__.split("+")[0]  # Extracts version without CUDA/CPU suffix
-#     install_cmd = [
-#         sys.executable, "-m", "pip", "install", "satlaspretrain-models"
-#     ]
-#     subprocess.check_call(install_cmd)
+# Check if running on Kaggle and install dependencies if not already installed
+if "KAGGLE_KERNEL_RUN_TYPE" in os.environ:
+    print("Started download for pytorch_geometric")
+    import torch
+    version = torch.__version__.split("+")[0]  # Extracts version without CUDA/CPU suffix
+    install_cmd = [
+        sys.executable, "-m", "pip", "install", "torchgeo"]
+    subprocess.check_call(install_cmd)
 
-# import satlaspretrain_models
+from torchgeo.models import resnet18,ResNet18_Weights
 
 torch.manual_seed(25)
+
+class FinetunedModel(nn.Module):
+    def __init__(self,):
+        super().__init__()
+        self.pretrained = resnet18(ResNet18_Weights.SENTINEL2_RGB_SECO)
+        
+        
+        for parameter in self.pretrained.parameters():
+            parameter.requires_grad = True
+        
+        self.relu = nn.ReLU()
+        self.processes_one = nn.Linear(in_features=1000,out_features=300)
+        self.processes_two = nn.Linear(in_features=1000,out_features=300)
+        self.fc1 = nn.Linear(in_features=600,out_features=200)
+        self.bn1 = nn.BatchNorm1d(num_features=200)
+        self.fc2 = nn.Linear(in_features=200,out_features=50)
+        self.bn2 = nn.BatchNorm1d(num_features=50)
+        self.fc3 = nn.Linear(in_features=50,out_features=1)
+
+        
+        
+    
+    def forward(self,coarse_input:torch.FloatTensor,granular_input:torch.FloatTensor):
+        coarse_input = self.pretrained(coarse_input)
+        granular_input = self.pretrained(granular_input)
+        
+        coarse_input = self.relu(self.processes_one(coarse_input))
+        granular_input = self.relu(self.processes_two(granular_input))
+        
+        combination = torch.cat((coarse_input,granular_input),dim=1)
+        output = self.fc1(combination)
+        output = self.bn1(output)
+        output = self.relu(output)
+        output = self.fc2(output)
+        output = self.bn2(output)
+        output = self.relu(output)
+        output = self.fc3(output)
+        
+        return output
 
 class CrossAttentionCNN(nn.Module):
     def __init__(self, hidden_size = 500,output_size=1000):
@@ -454,12 +492,12 @@ if __name__ == "__main__":
     
     
     # Hyper parameters
-    epochs = 200
-    lr = 0.005
-    batch_size = 10
-    l2_decay = 0.0005
+    epochs = 100
+    lr = 0.0005
+    batch_size = 16
+    l2_decay = 0.005
     training_split = 0.85
-    model = CrossAttentionCNN()
+    model = FinetunedModel()
     
     # Load data
     granular_images_ndarray = convert_images_to_numpy(image_path=granular_image_path, excel_path=excel_path)
@@ -487,7 +525,7 @@ if __name__ == "__main__":
     
     aawdt_train, aawdt_test = aawdt_ndarray[:training_split_index],aawdt_ndarray[training_split_index:]
     
-    train_dataset = ImageDataset(coarse_images=coarse_train,granular_images=granular_train,targets=aawdt_train, train=True)
+    train_dataset = ImageDataset(coarse_images=coarse_train,granular_images=granular_train,targets=aawdt_train,)
     
     test_dataset = ImageDataset(coarse_images=coarse_test,granular_images=granular_test,targets=aawdt_test)
     
