@@ -377,7 +377,7 @@ if __name__ == "__main__":
     parametric_features = get_parametric_features(excel_file_path)
     targets = get_regression_values(excel_file_path)
     
-    np.random.seed(0)
+    np.random.set_state()
     ordering = permutation(parametric_features.shape[0])
     
     shuffled_images = images_ndarray[ordering]

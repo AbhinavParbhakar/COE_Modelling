@@ -13,6 +13,7 @@ import subprocess
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder,StandardScaler
 import sys
+import datetime
 
 # Check if running on Kaggle and install dependencies if not already installed
 if "KAGGLE_KERNEL_RUN_TYPE" in os.environ:
@@ -30,63 +31,25 @@ np.random.seed(seed)
 torch.manual_seed(seed)
 torch.cuda.manual_seed_all(seed)
 
-class FinetunedModel(nn.Module):
-    def __init__(self,):
-        super().__init__()
-        self.pretrained = resnet18(ResNet18_Weights.SENTINEL2_RGB_MOCO)
-        
-        
-        for parameter in self.pretrained.parameters():
-            parameter.requires_grad = True
-        
-        self.relu = nn.ReLU()
-        self.processes_one = nn.Linear(in_features=1000,out_features=300)
-        self.processes_two = nn.Linear(in_features=1000,out_features=300)
-        self.fc1 = nn.Linear(in_features=600,out_features=200)
-        self.fc2 = nn.Linear(in_features=200,out_features=50)
-        self.fc3 = nn.Linear(in_features=50,out_features=1)
-        
-        self.dropout = nn.Dropout1d()
-
-        
-    def forward(self,coarse_input:torch.FloatTensor,granular_input:torch.FloatTensor):
-        coarse_input = self.relu(self.pretrained(coarse_input))
-        granular_input = self.relu(self.pretrained(granular_input))
-        
-        coarse_input = self.dropout(coarse_input)
-        coarse_input = self.processes_one(coarse_input)
-        coarse_input = self.relu(coarse_input)
-        
-        granular_input = self.dropout(granular_input)
-        granular_input = self.processes_two(granular_input)
-        granular_input = self.relu(granular_input)
-        
-        
-        combination = torch.cat((coarse_input,granular_input),dim=1)
-        
-        output = self.fc1(combination)
-        output = self.relu(output)
-        output = self.fc2(output)
-        output = self.relu(output)
-        output = self.fc3(output)
-        
-        return output
 
 class NN(nn.Module):
     def __init__(self):
         super().__init__()
-        
         self.net = nn.Sequential(
             nn.Linear(7,64),
+            nn.BatchNorm1d(64),
             nn.ReLU(),
             
             nn.Linear(64,128),
+            nn.BatchNorm1d(128),
             nn.ReLU(),
             
             nn.Linear(128,256),
+            nn.BatchNorm1d(256),
             nn.ReLU(),
             
             nn.Linear(256,512),
+            nn.BatchNorm1d(512),
             nn.ReLU(),
             
         )
@@ -95,56 +58,29 @@ class NN(nn.Module):
         x = self.net(x)
         
         return x
-
-class CrossAttentionCNN(nn.Module):
-    def __init__(self, hidden_size = 500,output_size=1000):
+    
+class CoarseImageModel(nn.Module):
+    def __init__(self):
         super().__init__()
-        self.hidden_size = hidden_size
-        self.output_size = output_size
         self.max_pool = nn.MaxPool2d(kernel_size=2)
         self.avg_pool = nn.AvgPool2d(kernel_size=2)
         self.flatten = nn.Flatten()
         self.relu = nn.ReLU()
-        self.parametric = NN()
-        
-        # Based on the paper I read, make such that both dimesions are roughly the same
-        # Based on the ResNet-18 architecture.
         self.coarse_layer_1 = nn.Sequential(
             nn.Conv2d(in_channels=3,out_channels=15,kernel_size=10,stride=3),
             nn.BatchNorm2d(num_features=15),
             nn.MaxPool2d(kernel_size=3,stride=3)
         )
-
-        self.granular_layer_1 = nn.Sequential(
-            nn.Conv2d(in_channels=3,out_channels=15,kernel_size=7,stride=2),
-            nn.BatchNorm2d(num_features=15),
-            nn.MaxPool2d(kernel_size=3,stride=2)
-        )
-        
         self.coarse_layer_2_1 = nn.Sequential(
             nn.Conv2d(in_channels=15,out_channels=15,kernel_size=3,padding=1),
             nn.BatchNorm2d(15),
             nn.ReLU()
         )
-
         self.coarse_layer_2_2 = nn.Sequential(
             nn.Conv2d(in_channels=15,out_channels=15,kernel_size=3,padding=1),
             nn.BatchNorm2d(15),
             nn.ReLU()
         )
-        
-        self.granular_layer_2_1 = nn.Sequential(
-            nn.Conv2d(in_channels=15,out_channels=15,kernel_size=3,padding=1),
-            nn.BatchNorm2d(15),
-            nn.ReLU()
-        )
-
-        self.granular_layer_2_2 = nn.Sequential(
-            nn.Conv2d(in_channels=15,out_channels=15,kernel_size=3,padding=1),
-            nn.BatchNorm2d(15),
-            nn.ReLU()
-        )
-        
         self.coarse_layer_3_1 = nn.Sequential(
             nn.Conv2d(in_channels=15,out_channels=30,kernel_size=3,padding=1),
             nn.BatchNorm2d(30),
@@ -157,20 +93,6 @@ class CrossAttentionCNN(nn.Module):
             nn.ReLU()          
         )
         self.coarse_layer_upsample_3 = nn.Conv2d(in_channels=15,out_channels=30,kernel_size=1)
-        
-        self.granular_layer_3_1 = nn.Sequential(
-            nn.Conv2d(in_channels=15,out_channels=30,kernel_size=3,padding=1),
-            nn.BatchNorm2d(30),
-            nn.ReLU()          
-        )
-        
-        self.granular_layer_3_2 = nn.Sequential(
-            nn.Conv2d(in_channels=30,out_channels=30,kernel_size=3,padding=1),
-            nn.BatchNorm2d(30),
-            nn.ReLU()          
-        )
-        self.granular_layer_upsample_3 = nn.Conv2d(in_channels=15,out_channels=30,kernel_size=1)
-        
         self.coarse_layer_4_1 = nn.Sequential(
             nn.Conv2d(in_channels=30,out_channels=45,kernel_size=3,padding=1),
             nn.BatchNorm2d(45),
@@ -182,23 +104,7 @@ class CrossAttentionCNN(nn.Module):
             nn.BatchNorm2d(45),
             nn.ReLU()
         )
-        
         self.coarse_layer_upsample_4 = nn.Conv2d(in_channels=30,out_channels=45,kernel_size=1)
-
-        self.granular_layer_4_1 = nn.Sequential(
-            nn.Conv2d(in_channels=30,out_channels=45,kernel_size=3,padding=1),
-            nn.BatchNorm2d(45),
-            nn.ReLU()
-        )
-
-        self.granular_layer_4_2 = nn.Sequential(
-            nn.Conv2d(in_channels=45,out_channels=45,kernel_size=3,padding=1),
-            nn.BatchNorm2d(45),
-            nn.ReLU()
-        )
-        
-        self.granular_layer_upsample_4 = nn.Conv2d(in_channels=30,out_channels=45,kernel_size=1)
-        
         self.coarse_layer_5_1 = nn.Sequential(
             nn.Conv2d(in_channels=45,out_channels=60,kernel_size=3,padding=1),
             nn.BatchNorm2d(60),
@@ -212,35 +118,8 @@ class CrossAttentionCNN(nn.Module):
         )
         
         self.coarse_layer_upsample_5 = nn.Conv2d(in_channels=45,out_channels=60,kernel_size=1)
-        
-        self.granular_layer_5_1 = nn.Sequential(
-            nn.Conv2d(in_channels=45,out_channels=60,kernel_size=3,padding=1),
-            nn.BatchNorm2d(60),
-            nn.ReLU()
-        )
-
-        self.granular_layer_5_2 = nn.Sequential(
-            nn.Conv2d(in_channels=60,out_channels=60,kernel_size=3,padding=1),
-            nn.BatchNorm2d(60),
-            nn.ReLU()
-        )
-        
-        self.granular_layer_upsample_5 = nn.Conv2d(in_channels=45,out_channels=60,kernel_size=1)
-
-        self.w_q = nn.Linear(in_features=960,out_features=hidden_size,bias=False)
-        self.w_k = nn.Linear(in_features=540,out_features=hidden_size,bias=False)
-        self.w_v = nn.Linear(in_features=540,out_features=output_size,bias=False)
-        self.softmax = nn.Softmax(dim=1)
-        
-        self.dropout = nn.Dropout()
-        
-        self.fc1 = nn.Linear(in_features=2012,out_features=500)
-        self.fc2 = nn.Linear(in_features=500,out_features=200)
-        self.fc3 = nn.Linear(in_features=200,out_features=50)
-        self.fc4 = nn.Linear(in_features=50,out_features=1)
     
-        
-    def forward(self,coarse_input:torch.FloatTensor,granular_input:torch.FloatTensor,parametric_input):
+    def forward(self,coarse_input:torch.FloatTensor):
         # Process coarse input
         x1_layer_2_input = self.coarse_layer_1(coarse_input)
         
@@ -267,7 +146,70 @@ class CrossAttentionCNN(nn.Module):
         x1 = x1 + x1_layer_5_input
         x1 = self.avg_pool(x1)
         
-        # Process granular input
+        return self.flatten(x1)
+
+class GranularImageModel(nn.Module):
+    def __init__(self,):
+        super().__init__()
+        self.max_pool = nn.MaxPool2d(kernel_size=2)
+        self.avg_pool = nn.AvgPool2d(kernel_size=2)
+        self.flatten = nn.Flatten()
+        self.relu = nn.ReLU()
+        self.granular_layer_1 = nn.Sequential(
+            nn.Conv2d(in_channels=3,out_channels=15,kernel_size=7,stride=2),
+            nn.BatchNorm2d(num_features=15),
+            nn.MaxPool2d(kernel_size=3,stride=2)
+        )
+        
+        self.granular_layer_2_1 = nn.Sequential(
+            nn.Conv2d(in_channels=15,out_channels=15,kernel_size=3,padding=1),
+            nn.BatchNorm2d(15),
+            nn.ReLU()
+        )
+
+        self.granular_layer_2_2 = nn.Sequential(
+            nn.Conv2d(in_channels=15,out_channels=15,kernel_size=3,padding=1),
+            nn.BatchNorm2d(15),
+            nn.ReLU()
+        )
+        
+        self.granular_layer_3_1 = nn.Sequential(
+            nn.Conv2d(in_channels=15,out_channels=30,kernel_size=3,padding=1),
+            nn.BatchNorm2d(30),
+            nn.ReLU()          
+        )
+        
+        self.granular_layer_3_2 = nn.Sequential(
+            nn.Conv2d(in_channels=30,out_channels=30,kernel_size=3,padding=1),
+            nn.BatchNorm2d(30),
+            nn.ReLU()          
+        )
+        self.granular_layer_upsample_3 = nn.Conv2d(in_channels=15,out_channels=30,kernel_size=1)
+        self.granular_layer_4_1 = nn.Sequential(
+            nn.Conv2d(in_channels=30,out_channels=45,kernel_size=3,padding=1),
+            nn.BatchNorm2d(45),
+            nn.ReLU()
+        )
+        self.granular_layer_4_2 = nn.Sequential(
+            nn.Conv2d(in_channels=45,out_channels=45,kernel_size=3,padding=1),
+            nn.BatchNorm2d(45),
+            nn.ReLU()
+        )
+        self.granular_layer_upsample_4 = nn.Conv2d(in_channels=30,out_channels=45,kernel_size=1)
+        self.granular_layer_5_1 = nn.Sequential(
+            nn.Conv2d(in_channels=45,out_channels=60,kernel_size=3,padding=1),
+            nn.BatchNorm2d(60),
+            nn.ReLU()
+        )
+        self.granular_layer_5_2 = nn.Sequential(
+            nn.Conv2d(in_channels=60,out_channels=60,kernel_size=3,padding=1),
+            nn.BatchNorm2d(60),
+            nn.ReLU()
+        )
+        
+        self.granular_layer_upsample_5 = nn.Conv2d(in_channels=45,out_channels=60,kernel_size=1)
+        
+    def forward(self,granular_input:torch.FloatTensor):
         x2_layer_2_input = self.granular_layer_1(granular_input)
         
         x2 = self.granular_layer_2_1(x2_layer_2_input)
@@ -293,11 +235,34 @@ class CrossAttentionCNN(nn.Module):
         x2 = x2 + x2_layer_5_input
         x2 = self.avg_pool(x2)
         
-        coarse_image_embedding = self.flatten(x1)
-        granular_image_embedding = self.flatten(x2)
-        parametric_embeddings = self.parametric(parametric_input)
+        return self.flatten(x2)
+   
+        
+        
+
+class MultimodalFullModel(nn.Module):
+    def __init__(self,):
+        super().__init__()
+        self.flatten = nn.Flatten()
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout()
+        
+        self.parametric_module = NN()
+        self.coarse_module = CoarseImageModel()
+        self.granular_module = GranularImageModel()
+        self.fc1 = nn.Linear(in_features=2012,out_features=500)
+        self.fc2 = nn.Linear(in_features=500,out_features=200)
+        self.fc3 = nn.Linear(in_features=200,out_features=50)
+        self.fc4 = nn.Linear(in_features=50,out_features=1)
+        
+    
+        
+    def forward(self,coarse_input:torch.FloatTensor,granular_input:torch.FloatTensor,parametric_input):
+        coarse_image_embedding = self.coarse_module(coarse_input)
+        granular_image_embedding = self.granular_module(granular_input)
+        parametric_embeddings = self.parametric_module(parametric_input)
         parametric_embeddings = self.relu(parametric_embeddings)
-        # attention_scores = self.cross_attention(main_vector=granular_image_embedding,cross_vector=coarse_image_embedding,hidden_size=self.hidden_size,output_size=self.output_size)
+
         combination = torch.cat(tensors=(coarse_image_embedding,granular_image_embedding,parametric_embeddings),dim=1)
         combination = self.dropout(combination)
         
@@ -308,24 +273,10 @@ class CrossAttentionCNN(nn.Module):
         output = self.relu(output)
         output = self.fc3(output)
         output = self.relu(output)
-        
         output = self.fc4(output)
         
         return output
     
-    def cross_attention(self,main_vector:torch.FloatTensor,cross_vector:torch.FloatTensor,hidden_size=500,output_size=1000)->torch.Tensor:
-        """
-        Implement cross attention
-        """
-        Q = self.w_q(cross_vector)
-        K = self.w_k(main_vector)
-        V = self.w_v(main_vector) # N * output_size
-        
-        attention = self.softmax( torch.mm(Q , torch.t(K)) / hidden_size ** 0.5) # Size N * N
-        
-        attention_scores = torch.mm(attention,V)
-        
-        return attention_scores
 
 def convert_images_to_numpy(image_path:str,excel_path:str)->np.ndarray:
     """
@@ -419,12 +370,14 @@ class ImageDataset(Dataset):
     
 
 
-def train(model: torch.nn.Module, epochs: int, lr: float, batch_size: int, decay: float, train_data, test_data,validation_frequency=10):
+def train(model: torch.nn.Module, epochs: int, lr: float, batch_size: int, decay: float, train_data, test_data,):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
+    loss_fn = torch.nn.functional.mse_loss
     optim = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=decay)
-    training_loader = DataLoader(dataset=train_data, batch_size=batch_size)
-    test_loader = DataLoader(dataset=test_data, batch_size=batch_size)
+    #scheduler = ReduceLROnPlateau(optimizer=optim, patience=5,factor=0.3)
+    training_loader = DataLoader(dataset=train_data, batch_size=batch_size,shuffle=True)
+    test_loader = DataLoader(dataset=test_data, batch_size=batch_size,shuffle=True)
     train_r2_values = []
     valid_r2_values = []
     train_rmse_values = []
@@ -438,6 +391,9 @@ def train(model: torch.nn.Module, epochs: int, lr: float, batch_size: int, decay
     early_stopping_index = 1
     best_rmse = 400000
     i = 0
+    
+    checkpoint = None
+    best_preds = None
     with open('training.txt', 'w') as file:
         while i < epochs and not early_stop:
             model.train()
@@ -446,7 +402,7 @@ def train(model: torch.nn.Module, epochs: int, lr: float, batch_size: int, decay
             for coarse_input, granular_input, param_input, target in training_loader:
                 optim.zero_grad()
                 pred = model(coarse_input.to(device), granular_input.to(device),param_input.to(device))
-                loss = torch.nn.functional.mse_loss(pred, target.to(device))
+                loss = loss_fn(pred, target.to(device))
                 loss.backward()
                 optim.step()
 
@@ -484,6 +440,7 @@ def train(model: torch.nn.Module, epochs: int, lr: float, batch_size: int, decay
             valid_r2 = r2_score(valid_targets, valid_preds)
             valid_mape = mean_absolute_percentage_error(valid_targets, valid_preds)
             
+            #scheduler.step(mean_squared_error(valid_targets, valid_preds))
             valid_mape_values.append(valid_mape * 100)
             valid_rmse_values.append(valid_loss)
             valid_r2_values.append(valid_r2)
@@ -498,6 +455,8 @@ def train(model: torch.nn.Module, epochs: int, lr: float, batch_size: int, decay
             # Early Stopping Mechanism
             if valid_loss < best_rmse:
                 best_rmse = valid_loss
+                checkpoint = {"Saved Model":model.state_dict()}
+                best_preds = valid_preds
                 early_stopping_index = 1
             else:
                 early_stopping_index += 1
@@ -509,7 +468,10 @@ def train(model: torch.nn.Module, epochs: int, lr: float, batch_size: int, decay
     create_graph(epochs_values,[train_mape_values,valid_mape_values],"Multimodal MAPE","Epochs","MAPE (%)")
     create_graph(epochs_values,[train_rmse_values,valid_rmse_values],"Multimodal RMSE","Epochs","RMSE")
     create_graph(epochs_values,[train_r2_values,valid_r2_values],"Multimodal R2Score","Epochs","R2Score")
-    create_graph([i + 1 for i in range(valid_targets.shape[0])],y_values=[valid_targets.reshape(valid_targets.shape[0]),valid_preds.reshape(valid_preds.shape[0])],title="Ground truth (Training Line) vs Predictions (Validation Line)",xlabel="Data Point",ylabel="AAWDT")
+    create_graph([i + 1 for i in range(valid_targets.shape[0])],y_values=[valid_targets.reshape(valid_targets.shape[0]),best_preds.reshape(best_preds.shape[0])],title="Ground Truth",xlabel="Data Point",ylabel="AAWDT",ground_truth=True)
+    save_name = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    model_copy = MultimodalFullModel().to(device=device).load_state_dict(checkpoint['Saved Model'])
+    torch.save(model_copy,f'{save_name}.pth')
 
 def preprocess_data(df:pd.DataFrame)->np.ndarray:
     """
@@ -520,14 +482,14 @@ def preprocess_data(df:pd.DataFrame)->np.ndarray:
     """
     transform = ColumnTransformer(transformers=[
         ('Standard Scale',StandardScaler(),['Latitude','Longitude','Speed',]),
-        ('One Hot Encode',OneHotEncoder(),['Road_Class'])
+        ('One Hot',OneHotEncoder(),['Road_Class'])
     ])
     
     return transform.fit_transform(df).astype(np.float32)
 
-def get_parametric_features(file_path:str)->np.ndarray:
+def get_parametric_features(file_path:str)->pd.DataFrame:
     """
-    Create a ``numpy.ndarray`` containing features.
+    Create a ``pandas.DataFrame`` containing features.
     
     Parameters
     ----------
@@ -535,18 +497,16 @@ def get_parametric_features(file_path:str)->np.ndarray:
         The path of the excel file to be opened. Contains the regression values per Study ID.    
     Returns
     -------
-    ``numpy.ndarray``
+    ``pandas.DataFrame``
         Numpy array corresponding to corresponding features.
     """
     df = pd.read_csv(file_path)
-    target_cols =  ['Latitude','Longitude','Road_Class','Speed',
-    ]
+    target_cols =  ['Latitude','Longitude','Road_Class','Speed']
 
     df = df.drop(df[df['Road_Class'] == 'Alley'].index,axis=0)
     df = df[target_cols]
     
-    features = preprocess_data(df)
-    return features
+    return df
 
 def get_regression_values(file_path:str)->np.ndarray:
     """
@@ -567,11 +527,7 @@ def get_regression_values(file_path:str)->np.ndarray:
     targets = targets.reshape((-1,1))
     return targets.astype(np.float32)
 
-def create_graph(x_values:tuple,y_values:list[list],title:str,xlabel:str,ylabel:str):
-    """
-    Given the graph details, plot the graph and save it under ``<title>.png``. ENSURE THAT THE TRAINING Y VALUES ARE PLACED FIRST
-    """
-    plt.figure(figsize=(10,6))
+def graph_ground_truth(x_values:tuple,y_values:list[list],title:str,xlabel:str,ylabel:str):
     plot_config = {
         0 : {
             'color':'darkorange',
@@ -591,7 +547,54 @@ def create_graph(x_values:tuple,y_values:list[list],title:str,xlabel:str,ylabel:
     plt.legend()
     plt.grid(visible=True,)
     plt.title(title)
-    plt.savefig(f'{title}.png')        
+    plt.savefig(f'{title}-comparison.png')
+    
+    plt.cla()
+    
+    # Scale down AAWDT by a 1000
+    for y_value in y_values:
+        y_value = y_value / 1000
+    
+    plt.plot(x_values,x_values,color='red',linestyle='dashed')
+    plt.scatter(y_values[0],y_values[1])
+    plt.xlabel('Ground Truth AAWDT')
+    plt.ylabel('Prediction AAWDT')
+    plt.legend()
+    plt.grid(visible=True,)
+    plt.title(title)
+    plt.savefig(f'{title}-slope.png')
+    
+    
+
+def create_graph(x_values:tuple,y_values:list[list],title:str,xlabel:str,ylabel:str,ground_truth=False):
+    """
+    Given the graph details, plot the graph and save it under ``<title>.png``. ENSURE THAT THE TRAINING Y VALUES ARE PLACED FIRST if ``ground_truth`` = ``False`` (default).
+    """
+    plt.figure(figsize=(10,6))
+    
+    if ground_truth:
+        graph_ground_truth(x_values=x_values,y_values=y_values,title=title,xlabel=xlabel,ylabel=ylabel)
+    else:
+        plot_config = {
+            0 : {
+                'color':'darkorange',
+                'marker' : 'd',
+                'label':'Training'
+            },
+            1 : {
+                'color':'seagreen',
+                'marker' : 'd',
+                'label':'Validation'
+            }
+        }
+        for i,labels in enumerate(y_values):
+            plt.plot(x_values,labels,color=plot_config[i]['color'],marker=plot_config[i]['marker'],label=plot_config[i]['label'])
+        plt.xlabel(xlabel)
+        plt.ylabel(ylabel)
+        plt.legend()
+        plt.grid(visible=True,)
+        plt.title(title)
+        plt.savefig(f'{title}.png')        
     
 
 if __name__ == "__main__":
@@ -608,41 +611,47 @@ if __name__ == "__main__":
     
     # Hyper parameters
     epochs = 200
-    lr = 0.0005
+    lr = 0.005
     batch_size = 16
     l2_decay = 0.05
     training_split = 0.85
-    model = CrossAttentionCNN()
+    model = MultimodalFullModel()
     
     # Load data
     granular_images_ndarray = convert_images_to_numpy(image_path=granular_image_path, excel_path=excel_path)
     
     coarse_images_ndarray = convert_images_to_numpy(image_path=coarse_image_path, excel_path=excel_path)
     
-    parametric_features_ndarray = get_parametric_features(file_path=excel_path)
-    
+    parametric_features_ndarray = get_parametric_features(excel_path)
     
     aawdt_ndarray = get_regression_values(file_path=excel_path)
  
     # Shuffle data
-    random_permutation = np.random.permutation(granular_images_ndarray.shape[0])
+    # random_permutation = np.random.permutation(granular_images_ndarray.shape[0])
     
-    granular_images_ndarray = granular_images_ndarray[random_permutation]
+    # granular_images_ndarray = granular_images_ndarray[random_permutation]
     
-    coarse_images_ndarray = coarse_images_ndarray[random_permutation]
+    # coarse_images_ndarray = coarse_images_ndarray[random_permutation]
     
-    aawdt_ndarray = aawdt_ndarray[random_permutation]
+    # aawdt_ndarray = aawdt_ndarray[random_permutation]
     
-    parametric_features_ndarray = parametric_features_ndarray[random_permutation]
+    # parametric_features_ndarray = parametric_features_ndarray[random_permutation]
     
     # Split data
     training_split_index = int(granular_images_ndarray.shape[0] * training_split)
     
-    granular_train, coarse_train, param_train = granular_images_ndarray[:training_split_index],coarse_images_ndarray[:training_split_index], parametric_features_ndarray[:training_split_index]
+    param_train_df = parametric_features_ndarray.iloc[:training_split_index]
+    param_test_df = parametric_features_ndarray.iloc[training_split_index:]
     
-    granular_test, coarse_test, param_test = granular_images_ndarray[training_split_index:],coarse_images_ndarray[training_split_index:], parametric_features_ndarray[training_split_index:]
+    param_train = preprocess_data(param_train_df)
+    param_test = preprocess_data(param_test_df)
+    
+    granular_train, coarse_train,  = granular_images_ndarray[:training_split_index],coarse_images_ndarray[:training_split_index],
+    
+    granular_test, coarse_test, = granular_images_ndarray[training_split_index:],coarse_images_ndarray[training_split_index:],
     
     aawdt_train, aawdt_test = aawdt_ndarray[:training_split_index],aawdt_ndarray[training_split_index:]
+
     
     train_dataset = TensorDataset(
         torch.from_numpy(coarse_train).permute(0,3,1,2) / 255,
@@ -659,4 +668,5 @@ if __name__ == "__main__":
     
     
     train(model=model,epochs=epochs,lr=lr,batch_size=batch_size,decay=l2_decay,train_data=train_dataset,test_data=test_dataset)
+    
     
