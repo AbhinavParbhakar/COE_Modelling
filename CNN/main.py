@@ -278,10 +278,10 @@ class MultimodalFullModel(nn.Module):
         return output
     
 
-def convert_images_to_numpy(image_path:str,excel_path:str)->np.ndarray:
+def convert_images_to_numpy(image_path:str,ordering:list)->np.ndarray:
     """
     Converts the images stored under the given parameter path into one large ``numpy.ndarray`` object.
-    Uses the ordering of the inputs in the excel path to order the images in the outputted array.
+    Uses the ordering provided to order the images in the outputted array.
     
     Parameters
     ----------
@@ -297,9 +297,7 @@ def convert_images_to_numpy(image_path:str,excel_path:str)->np.ndarray:
     ``numpy.ndarray``
         The numpy array containing the images
     """
-    df = pd.read_csv(excel_path)
-    df = df.drop(df[df['Road_Class'] == 'Alley'].index,axis=0)
-    file_names = df['Estimation_point'].tolist()
+    file_names = ordering
     absolute_path = os.path.abspath(image_path)
     nested_path_generator = os.walk(absolute_path)
     image_paths = None
@@ -373,7 +371,7 @@ class ImageDataset(Dataset):
 def train(model: torch.nn.Module, epochs: int, lr: float, batch_size: int, decay: float, train_data, test_data,):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
-    loss_fn = torch.nn.functional.mse_loss
+    loss_fn = torch.nn.functional.huber_loss
     optim = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=decay)
     #scheduler = ReduceLROnPlateau(optimizer=optim, patience=5,factor=0.3)
     training_loader = DataLoader(dataset=train_data, batch_size=batch_size,shuffle=True)
@@ -394,6 +392,7 @@ def train(model: torch.nn.Module, epochs: int, lr: float, batch_size: int, decay
     
     checkpoint = None
     best_preds = None
+    best_targets = None
     with open('training.txt', 'w') as file:
         while i < epochs and not early_stop:
             model.train()
@@ -457,6 +456,7 @@ def train(model: torch.nn.Module, epochs: int, lr: float, batch_size: int, decay
                 best_rmse = valid_loss
                 checkpoint = {"Saved Model":model.state_dict()}
                 best_preds = valid_preds
+                best_targets = valid_targets
                 early_stopping_index = 1
             else:
                 early_stopping_index += 1
@@ -468,7 +468,7 @@ def train(model: torch.nn.Module, epochs: int, lr: float, batch_size: int, decay
     create_graph(epochs_values,[train_mape_values,valid_mape_values],"Multimodal MAPE","Epochs","MAPE (%)")
     create_graph(epochs_values,[train_rmse_values,valid_rmse_values],"Multimodal RMSE","Epochs","RMSE")
     create_graph(epochs_values,[train_r2_values,valid_r2_values],"Multimodal R2Score","Epochs","R2Score")
-    create_graph([i + 1 for i in range(valid_targets.shape[0])],y_values=[valid_targets.reshape(valid_targets.shape[0]),best_preds.reshape(best_preds.shape[0])],title="Ground Truth",xlabel="Data Point",ylabel="AAWDT",ground_truth=True)
+    create_graph([i + 1 for i in range(best_targets.shape[0])],y_values=[best_targets.reshape(best_targets.shape[0]),best_preds.reshape(best_preds.shape[0])],title="Ground Truth",xlabel="Data Point",ylabel="AAWDT",ground_truth=True)
     save_name = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     model_copy = MultimodalFullModel().to(device=device).load_state_dict(checkpoint['Saved Model'])
     torch.save(model_copy,f'{save_name}.pth')
@@ -487,28 +487,42 @@ def preprocess_data(df:pd.DataFrame)->np.ndarray:
     
     return transform.fit_transform(df).astype(np.float32)
 
-def get_parametric_features(file_path:str)->pd.DataFrame:
+def get_parametric_features(file_path:str, train_split=0.85)->pd.DataFrame:
     """
     Create a ``pandas.DataFrame`` containing features.
     
     Parameters
     ----------
     excel_path : ``str``
-        The path of the excel file to be opened. Contains the regression values per Study ID.    
+        The path of the excel file to be opened. Contains the regression values per Study ID.
+        Clean the data such that an equal distribution of road classes are present in the training and test dataset, based on the split,
+        and then cojoin the data, such that the first ``train_split`` number of elements belong to the training set, while the next number of elements
+        belong to the test set.  
     Returns
     -------
     ``pandas.DataFrame``
-        Numpy array corresponding to corresponding features.
+        Features in the form of a df.
     """
     df = pd.read_csv(file_path)
-    target_cols =  ['Latitude','Longitude','Road_Class','Speed']
-
-    df = df.drop(df[df['Road_Class'] == 'Alley'].index,axis=0)
-    df = df[target_cols]
+    unique_split_values = df['Road_Class'].unique()
+    train_groupings = []
+    test_groupings = []
+    
+    for unique_val in unique_split_values:
+        unique_val_df = df[df['Road_Class'] == unique_val]
+        train_index = int(unique_val_df.shape[0] * train_split)
+        train_data = unique_val_df[:train_index]
+        test_data = unique_val_df[train_index:]
+        train_groupings.append(train_data)
+        test_groupings.append(test_data)
+    
+    train_df = pd.concat(train_groupings,axis=0)
+    test_df = pd.concat(test_groupings,axis=0)
+    df = pd.concat([train_df,test_df],axis=0)
     
     return df
 
-def get_regression_values(file_path:str)->np.ndarray:
+def get_regression_values(file_path:str,ordering:list)->np.ndarray:
     """
     Create a ``numpy.ndarray`` containing parallel matched regression values for the images.
     
@@ -521,9 +535,11 @@ def get_regression_values(file_path:str)->np.ndarray:
     ``numpy.ndarray``
         Tuple of numpy array corresponding to target values matched with given images. 
     """
+    regression_values = []
     df = pd.read_csv(file_path)
-    df = df.drop(df[df['Road_Class'] == 'Alley'].index,axis=0)
-    targets = df['AAWDT'].values
+    for id in ordering:
+        regression_values.append(df['AAWDT'][df['Estimation_point'] == id].values[0])
+    targets = np.array(regression_values)
     targets = targets.reshape((-1,1))
     return targets.astype(np.float32)
 
@@ -611,20 +627,20 @@ if __name__ == "__main__":
     
     # Hyper parameters
     epochs = 200
-    lr = 0.005
+    lr = 0.002
     batch_size = 16
     l2_decay = 0.05
     training_split = 0.85
     model = MultimodalFullModel()
     
     # Load data
-    granular_images_ndarray = convert_images_to_numpy(image_path=granular_image_path, excel_path=excel_path)
+    parametric_features_df = get_parametric_features(excel_path)
+    orderings = parametric_features_df['Estimation_point'].tolist()
+    granular_images_ndarray = convert_images_to_numpy(image_path=granular_image_path, ordering=orderings)
     
-    coarse_images_ndarray = convert_images_to_numpy(image_path=coarse_image_path, excel_path=excel_path)
+    coarse_images_ndarray = convert_images_to_numpy(image_path=coarse_image_path, ordering=orderings)
     
-    parametric_features_ndarray = get_parametric_features(excel_path)
-    
-    aawdt_ndarray = get_regression_values(file_path=excel_path)
+    aawdt_ndarray = get_regression_values(file_path=excel_path,ordering=orderings)
  
     # Shuffle data
     # random_permutation = np.random.permutation(granular_images_ndarray.shape[0])
@@ -640,12 +656,11 @@ if __name__ == "__main__":
     # Split data
     training_split_index = int(granular_images_ndarray.shape[0] * training_split)
     
-    param_train_df = parametric_features_ndarray.iloc[:training_split_index]
-    param_test_df = parametric_features_ndarray.iloc[training_split_index:]
+    param_train_df = parametric_features_df[:training_split_index]
+    param_test_df = parametric_features_df[training_split_index:]
     
     param_train = preprocess_data(param_train_df)
     param_test = preprocess_data(param_test_df)
-    
     granular_train, coarse_train,  = granular_images_ndarray[:training_split_index],coarse_images_ndarray[:training_split_index],
     
     granular_test, coarse_test, = granular_images_ndarray[training_split_index:],coarse_images_ndarray[training_split_index:],
