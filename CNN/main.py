@@ -4,6 +4,7 @@ from torch.utils.data import DataLoader,Dataset, TensorDataset
 from PIL import Image
 import pandas as pd
 import numpy as np
+from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingLR
 import os
 import matplotlib.pyplot as plt
 from torchvision.transforms import ToTensor
@@ -373,7 +374,7 @@ def train(model: torch.nn.Module, epochs: int, lr: float, batch_size: int, decay
     model = model.to(device)
     loss_fn = torch.nn.functional.huber_loss
     optim = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=decay)
-    #scheduler = ReduceLROnPlateau(optimizer=optim, patience=5,factor=0.3)
+    scheduler = CosineAnnealingLR(optimizer=optim,T_max=15,eta_min=0.0001)
     training_loader = DataLoader(dataset=train_data, batch_size=batch_size,shuffle=True)
     test_loader = DataLoader(dataset=test_data, batch_size=batch_size,shuffle=True)
     train_r2_values = []
@@ -385,7 +386,7 @@ def train(model: torch.nn.Module, epochs: int, lr: float, batch_size: int, decay
     epochs_values = []
     early_stop = False
     
-    early_stopping_threshold = 20
+    early_stopping_threshold = 30
     early_stopping_index = 1
     best_rmse = 400000
     i = 0
@@ -443,6 +444,8 @@ def train(model: torch.nn.Module, epochs: int, lr: float, batch_size: int, decay
             valid_mape_values.append(valid_mape * 100)
             valid_rmse_values.append(valid_loss)
             valid_r2_values.append(valid_r2)
+            
+            scheduler.step()
             
 
             file.write(f'\n---------------------------\nValidation Epoch: {i}\n')
@@ -548,12 +551,12 @@ def graph_ground_truth(x_values:tuple,y_values:list[list],title:str,xlabel:str,y
         0 : {
             'color':'darkorange',
             'marker' : 'd',
-            'label':'Training'
+            'label':'Actual AAWDT'
         },
         1 : {
             'color':'seagreen',
             'marker' : 'd',
-            'label':'Validation'
+            'label':'Estimated AAWDT'
         }
     }
     for i,labels in enumerate(y_values):
@@ -571,7 +574,7 @@ def graph_ground_truth(x_values:tuple,y_values:list[list],title:str,xlabel:str,y
     for y_value in y_values:
         y_value = y_value / 1000
     
-    plt.plot(x_values,x_values,color='red',linestyle='dashed')
+    plt.plot(y_values[0],y_values[0],color='red',linestyle='dashed')
     plt.scatter(y_values[0],y_values[1])
     plt.xlabel('Ground Truth AAWDT')
     plt.ylabel('Prediction AAWDT')
@@ -627,7 +630,7 @@ if __name__ == "__main__":
     
     # Hyper parameters
     epochs = 200
-    lr = 0.002
+    lr = 0.005
     batch_size = 16
     l2_decay = 0.05
     training_split = 0.85
