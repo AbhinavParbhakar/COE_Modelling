@@ -369,12 +369,34 @@ class ImageDataset(Dataset):
     
 
 
-def train(model: torch.nn.Module, epochs: int, lr: float, batch_size: int, decay: float, train_data, test_data,):
+def train(model: torch.nn.Module, epochs: int, lr: float, batch_size: int, decay: float, train_data:Dataset, test_data:Dataset,create_graphs=False)->tuple:
+    """
+    Parameters
+    ----------
+    model : ``torch.nn.Module``
+        The model architecture over which training should occur.
+    epochs : ``int``    
+        Number of iterations to train the model
+    lr : ``float``
+        Learning to set for training
+    batch_size : ``int``
+        Batch size to use during training
+    train_data : ``torch.utils.data.Dataset``
+        Training data
+    test_data : ``torch.utils.data.Dataset``
+        Test data
+    create_graphs : ``bool``
+        Specifies whether not training graphs should be generated (False by Default)
+        
+    Returns
+    -------
+    ``tuple[best_achieved_r2,copy_of_model,path_stored_model.pth]``
+    """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
     loss_fn = torch.nn.functional.huber_loss
     optim = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=decay)
-    scheduler = CosineAnnealingLR(optimizer=optim,T_max=15,eta_min=0.0001)
+    scheduler = CosineAnnealingLR(optimizer=optim,T_max=30,eta_min=0.0001)
     training_loader = DataLoader(dataset=train_data, batch_size=batch_size,shuffle=True)
     test_loader = DataLoader(dataset=test_data, batch_size=batch_size,shuffle=True)
     train_r2_values = []
@@ -386,9 +408,10 @@ def train(model: torch.nn.Module, epochs: int, lr: float, batch_size: int, decay
     epochs_values = []
     early_stop = False
     
-    early_stopping_threshold = 30
+    early_stopping_threshold = 50
     early_stopping_index = 1
     best_rmse = 400000
+    best_r2 = -5
     i = 0
     
     checkpoint = None
@@ -455,8 +478,8 @@ def train(model: torch.nn.Module, epochs: int, lr: float, batch_size: int, decay
             file.write('---------------------------\n')
             
             # Early Stopping Mechanism
-            if valid_loss < best_rmse:
-                best_rmse = valid_loss
+            if valid_r2 >= best_r2:
+                best_r2 = valid_r2
                 checkpoint = {"Saved Model":model.state_dict()}
                 best_preds = valid_preds
                 best_targets = valid_targets
@@ -468,18 +491,54 @@ def train(model: torch.nn.Module, epochs: int, lr: float, batch_size: int, decay
                 early_stop = True
             i += 1
     
-    create_graph(epochs_values,[train_mape_values,valid_mape_values],"Multimodal MAPE","Epochs","MAPE (%)")
-    create_graph(epochs_values,[train_rmse_values,valid_rmse_values],"Multimodal RMSE","Epochs","RMSE")
-    create_graph(epochs_values,[train_r2_values,valid_r2_values],"Multimodal R2Score","Epochs","R2Score")
-    create_graph([i + 1 for i in range(best_targets.shape[0])],y_values=[best_targets.reshape(best_targets.shape[0]),best_preds.reshape(best_preds.shape[0])],title="Ground Truth",xlabel="Data Point",ylabel="AAWDT",ground_truth=True)
+    if create_graphs:
+        create_graph(epochs_values,[train_mape_values,valid_mape_values],"Multimodal MAPE","Epochs","MAPE (%)")
+        create_graph(epochs_values,[train_rmse_values,valid_rmse_values],"Multimodal RMSE","Epochs","RMSE")
+        create_graph(epochs_values,[train_r2_values,valid_r2_values],"Multimodal R2Score","Epochs","R2Score")
+        create_graph([i + 1 for i in range(best_targets.shape[0])],y_values=[best_targets.reshape(best_targets.shape[0]),best_preds.reshape(best_preds.shape[0])],title="Ground Truth",xlabel="Data Point",ylabel="AAWDT",ground_truth=True)
     save_name = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     model_copy = MultimodalFullModel().to(device=device).load_state_dict(checkpoint['Saved Model'])
-    torch.save(model_copy,f'{save_name}.pth')
+    
+    return (best_r2,model_copy,f'{save_name}.pth')
+
+def grid_search(lr_ranges:list[int],batch_size_ranges:list[int],regularization_ranges:list[int],train_dataset:Dataset,test_dataset:Dataset):
+    """
+    Apply grid search over the provided metrics, save the model and print grid search results.
+    """
+    epochs = 200
+    model = MultimodalFullModel()
+    best_r2 = -5
+    saved_model = None
+    final_save_name = ''
+    best_batch_size = 0
+    best_lr = 0
+    best_l2 = 0
+        
+    for lr in lr_ranges:
+        for batch_size in batch_size_ranges:
+            for l2_decay in regularization_ranges:
+                r2, best_model, save_name = train(model=model,epochs=epochs,lr=lr,batch_size=batch_size,decay=l2_decay,train_data=train_dataset,test_data=test_dataset)
+                if r2 > best_r2:
+                    best_r2 = r2
+                    saved_model = best_model
+                    final_save_name = save_name
+                    best_lr = lr
+                    best_l2 = l2_decay
+                    best_batch_size = batch_size
+                    
+    with open('search_results','w') as file:
+        file.write(f'Best R2 Score: {best_r2}\n')
+        file.write(f'Best LR: {best_lr}\n')
+        file.write(f'Best Batch Size: {best_batch_size}\n')
+        file.write(f'Best L2 decay: {best_l2}\n')
+        
+    torch.save(saved_model,final_save_name)
+    
 
 def preprocess_data(df:pd.DataFrame)->np.ndarray:
     """
     Using the given data frame containing the information for studies, apply StandardScaling for 
-    the 'Lat, Long, Speed' columns. Apply OneHotEncoding for the 'roadclass, land usage' columns. 
+    the 'Lat, Long, Speed' columns. Apply OneHotEncoding for the 'roadclass' col. 
     
     Then return the output as a nd.ndarray 
     """
@@ -624,13 +683,13 @@ if __name__ == "__main__":
         excel_path = './data/excel_files/duplicates_removed.csv'
     else:
         coarse_image_path = "/kaggle/input/coe-cnn-Experiment/coarse images"
-        granular_image_path = "/kaggle/input/coe-cnn-Experiment/granular images"
+        granular_image_path = "/kaggle/input/coe-cnn-Experiment/granular_images"
         excel_path = "/kaggle/input/coe-cnn-Experiment/duplicates_removed.csv"
     
     
     # Hyper parameters
     epochs = 200
-    lr = 0.005
+    lr = 0.001
     batch_size = 16
     l2_decay = 0.05
     training_split = 0.85
@@ -684,7 +743,11 @@ if __name__ == "__main__":
         torch.from_numpy(aawdt_test)
         )
     
-    
-    train(model=model,epochs=epochs,lr=lr,batch_size=batch_size,decay=l2_decay,train_data=train_dataset,test_data=test_dataset)
+    lr_ranges = [0.0005,0.001,0.002,0.004]
+    batch_size_ranges = [8,16,24,32]
+    regularization_ranges = [0.05,0.01,0.005,0.001]
+    grid_search(lr_ranges=lr_ranges,batch_size_ranges=batch_size_ranges,regularization_ranges=regularization_ranges,train_dataset=train_dataset,test_dataset=test_dataset)
+    # best_rmse, best_model, save_name = train(model=model,epochs=epochs,lr=lr,batch_size=batch_size,decay=l2_decay,train_data=train_dataset,test_data=test_dataset,create_graphs=True)
+    # torch.save(best_model,save_name)
     
     
