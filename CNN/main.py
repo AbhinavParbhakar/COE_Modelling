@@ -18,14 +18,14 @@ import datetime
 
 # Check if running on Kaggle and install dependencies if not already installed
 if "KAGGLE_KERNEL_RUN_TYPE" in os.environ:
-    print("Started download for pytorch_geometric")
+    print("Started download for pip packages")
     import torch
     version = torch.__version__.split("+")[0]  # Extracts version without CUDA/CPU suffix
     install_cmd = [
-        sys.executable, "-m", "pip", "install", "torchgeo"]
+        sys.executable, "-m", "pip", "install", "bayesian-optimization"]
     subprocess.check_call(install_cmd)
 
-from torchgeo.models import resnet18,ResNet18_Weights
+from bayes_opt import BayesianOptimization
 
 seed = 42
 np.random.seed(seed)
@@ -238,9 +238,6 @@ class GranularImageModel(nn.Module):
         
         return self.flatten(x2)
    
-        
-        
-
 class MultimodalFullModel(nn.Module):
     def __init__(self,):
         super().__init__()
@@ -278,64 +275,6 @@ class MultimodalFullModel(nn.Module):
         
         return output
     
-
-def convert_images_to_numpy(image_path:str,ordering:list)->np.ndarray:
-    """
-    Converts the images stored under the given parameter path into one large ``numpy.ndarray`` object.
-    Uses the ordering provided to order the images in the outputted array.
-    
-    Parameters
-    ----------
-    
-    image_path : ``str``
-        Path of the folder containing images
-    excel_path : ``str``
-        Path of the address for the excel file
-    
-    Returns
-    -------
-    
-    ``numpy.ndarray``
-        The numpy array containing the images
-    """
-    file_names = ordering
-    absolute_path = os.path.abspath(image_path)
-    nested_path_generator = os.walk(absolute_path)
-    image_paths = None
-    images_numpy = []
-    
-    
-    for dirpath,dirnames,filenames in nested_path_generator:
-        image_paths = {name.split('.')[0] : os.path.join(dirpath,name) for name in filenames}  
-        
-    for file_name in file_names:
-        image_path = image_paths[str(int(file_name))]
-        image_array = np.array(Image.open(image_path))
-        images_numpy.append(image_array)
-    
-    return_numpy_array = np.array(images_numpy)
-    return return_numpy_array
-
-def generate_target_values_numpy(file_path:str)->np.ndarray:
-    """
-    Create a ``numpy.ndarray`` containing the AAWDT values for each sample in the provided file
-    
-    Parameters
-    ----------
-    file_path : ``str``
-        The path of the excel/csv file to be opened. Contains the regression values per Study ID.
-    
-    Returns
-    -------
-    ``numpy.ndarray``
-        Numpy array corresponding to the target values matched with given images. 
-    """
-    df = pd.read_csv(file_path)
-    df = df.drop(df[df['Road_Class'] == 'Alley'].index,axis=0)
-    regression_values = df['AAWDT'].values
-    
-    return regression_values.reshape((-1,1)).astype(np.float32)
-
 class ImageDataset(Dataset):
     def __init__(self,coarse_images:np.ndarray,granular_images:np.ndarray,targets:np.ndarray,train=False):        
         if train:
@@ -368,301 +307,237 @@ class ImageDataset(Dataset):
         return self.coarse_images[index], self.granular_images[index], self.y[index]
     
 
-
-def train(model: torch.nn.Module, epochs: int, lr: float, batch_size: int, decay: float, train_data:Dataset, test_data:Dataset,create_graphs=False)->tuple:
-    """
-    Parameters
-    ----------
-    model : ``torch.nn.Module``
-        The model architecture over which training should occur.
-    epochs : ``int``    
-        Number of iterations to train the model
-    lr : ``float``
-        Learning to set for training
-    batch_size : ``int``
-        Batch size to use during training
-    train_data : ``torch.utils.data.Dataset``
-        Training data
-    test_data : ``torch.utils.data.Dataset``
-        Test data
-    create_graphs : ``bool``
-        Specifies whether not training graphs should be generated (False by Default)
+# def grid_search(lr_ranges:list[int],batch_size_ranges:list[int],regularization_ranges:list[int],train_dataset:Dataset,test_dataset:Dataset,annealing_rates:list[float],annealing_ranges:list[int]):
+#     """
+#     Apply grid search over the provided metrics, save the model and print grid search results.
+#     """
+#     epochs = 200
+#     model = MultimodalFullModel()
+#     best_r2 = -5
+#     best_annealing_rate = 0
+#     best_annealing_range = 0
+#     saved_model = None
+#     final_save_name = ''
+#     best_batch_size = 0
+#     best_lr = 0
+#     best_l2 = 0
         
-    Returns
-    -------
-    ``tuple[best_achieved_r2,copy_of_model,path_stored_model.pth]``
-    """
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = model.to(device)
-    loss_fn = torch.nn.functional.huber_loss
-    optim = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=decay)
-    scheduler = CosineAnnealingLR(optimizer=optim,T_max=30,eta_min=0.0001)
-    training_loader = DataLoader(dataset=train_data, batch_size=batch_size,shuffle=True)
-    test_loader = DataLoader(dataset=test_data, batch_size=batch_size,shuffle=True)
-    train_r2_values = []
-    valid_r2_values = []
-    train_rmse_values = []
-    valid_rmse_values = []
-    train_mape_values = []
-    valid_mape_values = []
-    epochs_values = []
-    early_stop = False
-    
-    early_stopping_threshold = 50
-    early_stopping_index = 1
-    best_rmse = 400000
-    best_r2 = -5
-    i = 0
-    
-    checkpoint = None
-    best_preds = None
-    best_targets = None
-    with open('training.txt', 'w') as file:
-        while i < epochs and not early_stop:
-            model.train()
-            all_targets, all_preds = [], []
-
-            for coarse_input, granular_input, param_input, target in training_loader:
-                optim.zero_grad()
-                pred = model(coarse_input.to(device), granular_input.to(device),param_input.to(device))
-                loss = loss_fn(pred, target.to(device))
-                loss.backward()
-                optim.step()
-
-                all_targets.append(target.detach().cpu().numpy())
-                all_preds.append(pred.detach().cpu().numpy())
-
-            # Compute metrics after epoch
-            all_targets = np.concatenate(all_targets)
-            all_preds = np.concatenate(all_preds)
-            training_loss = np.sqrt(mean_squared_error(all_targets, all_preds))
-            r2 = r2_score(all_targets, all_preds)
-            mape = mean_absolute_percentage_error(all_targets, all_preds)
-
-            epochs_values.append(i)
-            train_rmse_values.append(training_loss)
-            train_mape_values.append(mape*100)
-            train_r2_values.append(r2)
-            file.write(f'\n---------------------------\nTraining Epoch: {i}\n')
-            file.write(f'r2 score is {r2:.3f}\n')
-            file.write(f'MAPE is {mape * 100:.2f}%\n')
-            file.write(f'RMSE is {training_loss:.3f}\n')
-            file.write('---------------------------\n')
-
-            model.eval()
-            valid_targets, valid_preds = [], []
-            with torch.no_grad():
-                for coarse_input, granular_input, param_input, target in test_loader:
-                    pred = model(coarse_input.to(device), granular_input.to(device),param_input.to(device))
-                    valid_targets.append(target.detach().cpu().numpy())
-                    valid_preds.append(pred.detach().cpu().numpy())
-
-            valid_targets = np.concatenate(valid_targets)
-            valid_preds = np.concatenate(valid_preds)
-            valid_loss = np.sqrt(mean_squared_error(valid_targets, valid_preds))
-            valid_r2 = r2_score(valid_targets, valid_preds)
-            valid_mape = mean_absolute_percentage_error(valid_targets, valid_preds)
-            
-            #scheduler.step(mean_squared_error(valid_targets, valid_preds))
-            valid_mape_values.append(valid_mape * 100)
-            valid_rmse_values.append(valid_loss)
-            valid_r2_values.append(valid_r2)
-            
-            scheduler.step()
-            
-
-            file.write(f'\n---------------------------\nValidation Epoch: {i}\n')
-            file.write(f'r2 score is {valid_r2:.3f}\n')
-            file.write(f'MAPE is {valid_mape * 100:.2f}%\n')
-            file.write(f'RMSE is {valid_loss:.3f}\n')
-            file.write('---------------------------\n')
-            
-            # Early Stopping Mechanism
-            if valid_r2 >= best_r2:
-                best_r2 = valid_r2
-                checkpoint = {"Saved Model":model.state_dict()}
-                best_preds = valid_preds
-                best_targets = valid_targets
-                early_stopping_index = 1
-            else:
-                early_stopping_index += 1
-            
-            if early_stopping_index == early_stopping_threshold:
-                early_stop = True
-            i += 1
-    
-    if create_graphs:
-        create_graph(epochs_values,[train_mape_values,valid_mape_values],"Multimodal MAPE","Epochs","MAPE (%)")
-        create_graph(epochs_values,[train_rmse_values,valid_rmse_values],"Multimodal RMSE","Epochs","RMSE")
-        create_graph(epochs_values,[train_r2_values,valid_r2_values],"Multimodal R2Score","Epochs","R2Score")
-        create_graph([i + 1 for i in range(best_targets.shape[0])],y_values=[best_targets.reshape(best_targets.shape[0]),best_preds.reshape(best_preds.shape[0])],title="Ground Truth",xlabel="Data Point",ylabel="AAWDT",ground_truth=True)
-    save_name = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-    model_copy = MultimodalFullModel().to(device=device).load_state_dict(checkpoint['Saved Model'])
-    
-    return (best_r2,model_copy,f'{save_name}.pth')
-
-def grid_search(lr_ranges:list[int],batch_size_ranges:list[int],regularization_ranges:list[int],train_dataset:Dataset,test_dataset:Dataset):
-    """
-    Apply grid search over the provided metrics, save the model and print grid search results.
-    """
-    epochs = 200
-    model = MultimodalFullModel()
-    best_r2 = -5
-    saved_model = None
-    final_save_name = ''
-    best_batch_size = 0
-    best_lr = 0
-    best_l2 = 0
-        
-    for lr in lr_ranges:
-        for batch_size in batch_size_ranges:
-            for l2_decay in regularization_ranges:
-                r2, best_model, save_name = train(model=model,epochs=epochs,lr=lr,batch_size=batch_size,decay=l2_decay,train_data=train_dataset,test_data=test_dataset)
-                if r2 > best_r2:
-                    best_r2 = r2
-                    saved_model = best_model
-                    final_save_name = save_name
-                    best_lr = lr
-                    best_l2 = l2_decay
-                    best_batch_size = batch_size
+#     for lr in lr_ranges:
+#         for batch_size in batch_size_ranges:
+#             for l2_decay in regularization_ranges:
+#                 for annealing_rate in annealing_rates:
+#                     for annealing_range in annealing_ranges:
+#                         r2, best_model, save_name = train(model=model,epochs=epochs,lr=lr,batch_size=batch_size,decay=l2_decay,train_data=train_dataset,test_data=test_dataset,annealing_range=annealing_range,annealing_rate=lr/annealing_rate)
+#                         if r2 > best_r2:
+#                             best_r2 = r2
+#                             saved_model = best_model
+#                             final_save_name = save_name
+#                             best_lr = lr
+#                             best_l2 = l2_decay
+#                             best_batch_size = batch_size
+#                             best_annealing_rate = annealing_rate
+#                             best_annealing_range = annealing_range
                     
-    with open('search_results','w') as file:
-        file.write(f'Best R2 Score: {best_r2}\n')
-        file.write(f'Best LR: {best_lr}\n')
-        file.write(f'Best Batch Size: {best_batch_size}\n')
-        file.write(f'Best L2 decay: {best_l2}\n')
+#     with open('search_results','w') as file:
+#         file.write(f'Best R2 Score: {best_r2}\n')
+#         file.write(f'Best LR: {best_lr}\n')
+#         file.write(f'Best Batch Size: {best_batch_size}\n')
+#         file.write(f'Best L2 decay: {best_l2}\n')
+#         file.write(f'Best annealing rate: {best_lr/best_annealing_rate}')
+#         file.write(f'Best ')
         
-    torch.save(saved_model,final_save_name)
+#     torch.save(saved_model,final_save_name)
     
+class ModelTrainer():
+    def __init__(self,print_graphs:bool,save_model=False):
+        os_name = os.name
+        if os_name == 'nt':
+            coarse_image_path = "./data/coarse images"
+            granular_image_path = './data/granular images'
+            excel_path = './data/excel_files/duplicates_removed.csv'
+        else:
+            coarse_image_path = "/kaggle/input/coe-cnn-Experiment/coarse images"
+            granular_image_path = "/kaggle/input/coe-cnn-Experiment/granular_images"
+            excel_path = "/kaggle/input/coe-cnn-Experiment/duplicates_removed.csv"
+        
+        
+        # Hyper parameters
+        epochs = 200
+        lr = 0.001
+        batch_size = 16
+        l2_decay = 0.05
+        training_split = 0.9
+        self.model = MultimodalFullModel()
+        self.print_graphs = print_graphs
+        self.save_model = save_model
+        
+        # Load data
+        parametric_features_df = self.get_parametric_features(excel_path,train_split=training_split)
+        self.excel_path = excel_path
+        orderings = parametric_features_df['Estimation_point'].tolist()
+        granular_images_ndarray = self.convert_images_to_numpy(image_path=granular_image_path, ordering=orderings)
+        
+        coarse_images_ndarray = self.convert_images_to_numpy(image_path=coarse_image_path, ordering=orderings)
+        
+        aawdt_ndarray = self.get_regression_values(file_path=excel_path,ordering=orderings)
+    
+        # Shuffle data
+        # random_permutation = np.random.permutation(granular_images_ndarray.shape[0])
+        
+        # granular_images_ndarray = granular_images_ndarray[random_permutation]
+        
+        # coarse_images_ndarray = coarse_images_ndarray[random_permutation]
+        
+        # aawdt_ndarray = aawdt_ndarray[random_permutation]
+        
+        # parametric_features_ndarray = parametric_features_ndarray[random_permutation]
+        
+        # Split data
+        training_split_index = int(granular_images_ndarray.shape[0] * training_split)
+        
+        param_train_df = parametric_features_df[:training_split_index]
+        param_test_df = parametric_features_df[training_split_index:]
+        
+        param_train = self.preprocess_data(param_train_df)
+        param_test = self.preprocess_data(param_test_df)
+        granular_train, coarse_train,  = granular_images_ndarray[:training_split_index],coarse_images_ndarray[:training_split_index],
+        
+        granular_test, coarse_test, = granular_images_ndarray[training_split_index:],coarse_images_ndarray[training_split_index:],
+        
+        aawdt_train, aawdt_test = aawdt_ndarray[:training_split_index],aawdt_ndarray[training_split_index:]
 
-def preprocess_data(df:pd.DataFrame)->np.ndarray:
-    """
-    Using the given data frame containing the information for studies, apply StandardScaling for 
-    the 'Lat, Long, Speed' columns. Apply OneHotEncoding for the 'roadclass' col. 
-    
-    Then return the output as a nd.ndarray 
-    """
-    transform = ColumnTransformer(transformers=[
-        ('Standard Scale',StandardScaler(),['Latitude','Longitude','Speed',]),
-        ('One Hot',OneHotEncoder(),['Road_Class'])
-    ])
-    
-    return transform.fit_transform(df).astype(np.float32)
+        
+        self.train_dataset = TensorDataset(
+            torch.from_numpy(coarse_train).permute(0,3,1,2) / 255,
+            torch.from_numpy(granular_train).permute(0,3,1,2) / 255,
+            torch.from_numpy(param_train),
+            torch.from_numpy(aawdt_train)
+            )
+        self.test_dataset = TensorDataset(
+            torch.from_numpy(coarse_test).permute(0,3,1,2) / 255,
+            torch.from_numpy(granular_test).permute(0,3,1,2) / 255,
+            torch.from_numpy(param_test),
+            torch.from_numpy(aawdt_test)
+            )
 
-def get_parametric_features(file_path:str, train_split=0.85)->pd.DataFrame:
-    """
-    Create a ``pandas.DataFrame`` containing features.
-    
-    Parameters
-    ----------
-    excel_path : ``str``
-        The path of the excel file to be opened. Contains the regression values per Study ID.
-        Clean the data such that an equal distribution of road classes are present in the training and test dataset, based on the split,
-        and then cojoin the data, such that the first ``train_split`` number of elements belong to the training set, while the next number of elements
-        belong to the test set.  
-    Returns
-    -------
-    ``pandas.DataFrame``
-        Features in the form of a df.
-    """
-    df = pd.read_csv(file_path)
-    unique_split_values = df['Road_Class'].unique()
-    train_groupings = []
-    test_groupings = []
-    
-    for unique_val in unique_split_values:
-        unique_val_df = df[df['Road_Class'] == unique_val]
-        train_index = int(unique_val_df.shape[0] * train_split)
-        train_data = unique_val_df[:train_index]
-        test_data = unique_val_df[train_index:]
-        train_groupings.append(train_data)
-        test_groupings.append(test_data)
-    
-    train_df = pd.concat(train_groupings,axis=0)
-    test_df = pd.concat(test_groupings,axis=0)
-    df = pd.concat([train_df,test_df],axis=0)
-    
-    return df
+    def preprocess_data(self,df:pd.DataFrame)->np.ndarray:
+        """
+        Using the given data frame containing the information for studies, apply StandardScaling for 
+        the 'Lat, Long, Speed' columns. Apply OneHotEncoding for the 'roadclass' col. 
+        
+        Then return the output as a nd.ndarray 
+        """
+        transform = ColumnTransformer(transformers=[
+            ('Standard Scale',StandardScaler(),['Latitude','Longitude','Speed',]),
+            ('One Hot',OneHotEncoder(),['Road_Class'])
+        ])
+        
+        return transform.fit_transform(df).astype(np.float32)
 
-def get_regression_values(file_path:str,ordering:list)->np.ndarray:
-    """
-    Create a ``numpy.ndarray`` containing parallel matched regression values for the images.
-    
-    Parameters
-    ----------
-    excel_path : ``str``
-        The path of the excel file to be opened. Contains the regression values per Study ID.    
-    Returns
-    -------
-    ``numpy.ndarray``
-        Tuple of numpy array corresponding to target values matched with given images. 
-    """
-    regression_values = []
-    df = pd.read_csv(file_path)
-    for id in ordering:
-        regression_values.append(df['AAWDT'][df['Estimation_point'] == id].values[0])
-    targets = np.array(regression_values)
-    targets = targets.reshape((-1,1))
-    return targets.astype(np.float32)
+    def get_parametric_features(self,file_path:str, train_split=0.85)->pd.DataFrame:
+        """
+        Create a ``pandas.DataFrame`` containing features.
+        
+        Parameters
+        ----------
+        excel_path : ``str``
+            The path of the excel file to be opened. Contains the regression values per Study ID.
+            Clean the data such that an equal distribution of road classes are present in the training and test dataset, based on the split,
+            and then cojoin the data, such that the first ``train_split`` number of elements belong to the training set, while the next number of elements
+            belong to the test set.  
+        Returns
+        -------
+        ``pandas.DataFrame``
+            Features in the form of a df.
+        """
+        df = pd.read_csv(file_path)
+        unique_split_values = df['Road_Class'].unique()
+        train_groupings = []
+        test_groupings = []
+        
+        for unique_val in unique_split_values:
+            unique_val_df = df[df['Road_Class'] == unique_val]
+            train_index = int(unique_val_df.shape[0] * train_split)
+            train_data = unique_val_df[:train_index]
+            test_data = unique_val_df[train_index:]
+            train_groupings.append(train_data)
+            test_groupings.append(test_data)
+        
+        train_df = pd.concat(train_groupings,axis=0)
+        test_df = pd.concat(test_groupings,axis=0)
+        df = pd.concat([train_df,test_df],axis=0)
+        
+        return df
 
-def graph_ground_truth(x_values:tuple,y_values:list[list],title:str,xlabel:str,ylabel:str):
-    plot_config = {
-        0 : {
-            'color':'darkorange',
-            'marker' : 'd',
-            'label':'Actual AAWDT'
-        },
-        1 : {
-            'color':'seagreen',
-            'marker' : 'd',
-            'label':'Estimated AAWDT'
-        }
-    }
-    for i,labels in enumerate(y_values):
-        plt.plot(x_values,labels,color=plot_config[i]['color'],marker=plot_config[i]['marker'],label=plot_config[i]['label'])
-    plt.xlabel(xlabel)
-    plt.ylabel(ylabel)
-    plt.legend()
-    plt.grid(visible=True,)
-    plt.title(title)
-    plt.savefig(f'{title}-comparison.png')
-    
-    plt.cla()
-    
-    # Scale down AAWDT by a 1000
-    for y_value in y_values:
-        y_value = y_value / 1000
-    
-    plt.plot(y_values[0],y_values[0],color='red',linestyle='dashed')
-    plt.scatter(y_values[0],y_values[1])
-    plt.xlabel('Ground Truth AAWDT')
-    plt.ylabel('Prediction AAWDT')
-    plt.legend()
-    plt.grid(visible=True,)
-    plt.title(title)
-    plt.savefig(f'{title}-slope.png')
-    
-    
+    def convert_images_to_numpy(self,image_path:str,ordering:list)->np.ndarray:
+        """
+        Converts the images stored under the given parameter path into one large ``numpy.ndarray`` object.
+        Uses the ordering provided to order the images in the outputted array.
+        
+        Parameters
+        ----------
+        
+        image_path : ``str``
+            Path of the folder containing images
+        excel_path : ``str``
+            Path of the address for the excel file
+        
+        Returns
+        -------
+        
+        ``numpy.ndarray``
+            The numpy array containing the images
+        """
+        file_names = ordering
+        absolute_path = os.path.abspath(image_path)
+        nested_path_generator = os.walk(absolute_path)
+        image_paths = None
+        images_numpy = []
+        
+        
+        for dirpath,dirnames,filenames in nested_path_generator:
+            image_paths = {name.split('.')[0] : os.path.join(dirpath,name) for name in filenames}  
+            
+        for file_name in file_names:
+            image_path = image_paths[str(int(file_name))]
+            image_array = np.array(Image.open(image_path))
+            images_numpy.append(image_array)
+        
+        return_numpy_array = np.array(images_numpy)
+        return return_numpy_array
 
-def create_graph(x_values:tuple,y_values:list[list],title:str,xlabel:str,ylabel:str,ground_truth=False):
-    """
-    Given the graph details, plot the graph and save it under ``<title>.png``. ENSURE THAT THE TRAINING Y VALUES ARE PLACED FIRST if ``ground_truth`` = ``False`` (default).
-    """
-    plt.figure(figsize=(10,6))
-    
-    if ground_truth:
-        graph_ground_truth(x_values=x_values,y_values=y_values,title=title,xlabel=xlabel,ylabel=ylabel)
-    else:
+    def get_regression_values(self,file_path:str,ordering:list)->np.ndarray:
+        """
+        Create a ``numpy.ndarray`` containing parallel matched regression values for the images.
+        
+        Parameters
+        ----------
+        excel_path : ``str``
+            The path of the excel file to be opened. Contains the regression values per Study ID.    
+        Returns
+        -------
+        ``numpy.ndarray``
+            Tuple of numpy array corresponding to target values matched with given images. 
+        """
+        regression_values = []
+        df = pd.read_csv(file_path)
+        for id in ordering:
+            regression_values.append(df['AAWDT'][df['Estimation_point'] == id].values[0])
+        targets = np.array(regression_values)
+        targets = targets.reshape((-1,1))
+        return targets.astype(np.float32)
+
+    def graph_ground_truth(self,x_values:tuple,y_values:list[list],title:str,xlabel:str,ylabel:str):
         plot_config = {
             0 : {
                 'color':'darkorange',
                 'marker' : 'd',
-                'label':'Training'
+                'label':'Actual AAWDT'
             },
             1 : {
                 'color':'seagreen',
                 'marker' : 'd',
-                'label':'Validation'
+                'label':'Estimated AAWDT'
             }
         }
         for i,labels in enumerate(y_values):
@@ -672,82 +547,246 @@ def create_graph(x_values:tuple,y_values:list[list],title:str,xlabel:str,ylabel:
         plt.legend()
         plt.grid(visible=True,)
         plt.title(title)
-        plt.savefig(f'{title}.png')        
+        plt.savefig(f'{title}-comparison.png')
+        
+        plt.cla()
+        
+        # Scale down AAWDT by a 1000
+        for y_value in y_values:
+            y_value = y_value / 1000
+        
+        plt.plot(y_values[0],y_values[0],color='red',linestyle='dashed')
+        plt.scatter(y_values[0],y_values[1])
+        plt.xlabel('Ground Truth AAWDT')
+        plt.ylabel('Prediction AAWDT')
+        plt.legend()
+        plt.grid(visible=True,)
+        plt.title(title)
+        plt.savefig(f'{title}-slope.png')
+        
+        
+
+    def create_graph(self,x_values:tuple,y_values:list[list],title:str,xlabel:str,ylabel:str,ground_truth=False):
+        """
+        Given the graph details, plot the graph and save it under ``<title>.png``. ENSURE THAT THE TRAINING Y VALUES ARE PLACED FIRST if ``ground_truth`` = ``False`` (default).
+        """
+        plt.figure(figsize=(10,6))
+        
+        if ground_truth:
+            self.graph_ground_truth(x_values=x_values,y_values=y_values,title=title,xlabel=xlabel,ylabel=ylabel)
+        else:
+            plot_config = {
+                0 : {
+                    'color':'darkorange',
+                    'marker' : 'd',
+                    'label':'Training'
+                },
+                1 : {
+                    'color':'seagreen',
+                    'marker' : 'd',
+                    'label':'Validation'
+                }
+            }
+            for i,labels in enumerate(y_values):
+                plt.plot(x_values,labels,color=plot_config[i]['color'],marker=plot_config[i]['marker'],label=plot_config[i]['label'])
+            plt.xlabel(xlabel)
+            plt.ylabel(ylabel)
+            plt.legend()
+            plt.grid(visible=True,)
+            plt.title(title)
+            plt.savefig(f'{title}.png') 
+    
+    def train_model(self,epochs: int, lr: float, batch_size: int, decay: float,annealing_rate=0.0001,annealing_range=30):
+        best_r2,save_name,model_copy,best_preds,best_targets = self.train(model=self.model,epochs=int(epochs),lr=lr,batch_size=int(batch_size),decay=decay,annealing_range=int(annealing_range),annealing_rate=annealing_rate,train_data=self.train_dataset,test_data=self.test_dataset,create_graphs=self.print_graphs)
+        self.best_preds = best_preds
+        self.best_targets = best_targets
+        if self.save_model:
+            torch.save(model_copy,save_name)
+        
+        return best_r2
+    
+    def get_training_featues_with_predictions(self)->pd.DataFrame:
+        df = pd.read_csv(self.excel_path)
+        column_names = ['AAWDT','Pred. AAWDT']
+        prediction_df = pd.DataFrame(data=np.concatenate((self.best_targets,self.best_preds),axis=1),columns=column_names)
+        df['AAWDT'] =  df['AAWDT'].astype(int)
+        prediction_df['AAWDT'] = prediction_df['AAWDT'].astype(int)
+        result_df = df.merge(prediction_df,on='AAWDT')
+        return result_df
+        
+    
+    def train(self,model:nn.Module,epochs: int, lr: float, batch_size: int, decay: float, train_data:Dataset, test_data:Dataset,create_graphs=False,annealing_rate=0.0001,annealing_range=30)->tuple:
+        """
+        Parameters
+        ----------
+        model : ``torch.nn.Module``
+            The model architecture over which training should occur.
+        epochs : ``int``    
+            Number of iterations to train the model
+        lr : ``float``
+            Learning to set for training
+        batch_size : ``int``
+            Batch size to use during training
+        train_data : ``torch.utils.data.Dataset``
+            Training data
+        test_data : ``torch.utils.data.Dataset``
+            Test data
+        create_graphs : ``bool``
+            Specifies whether not training graphs should be generated (False by Default)
+            
+        Returns
+        -------
+        ``tuple[best_achieved_r2,copy_of_model,path_stored_model.pth]``
+        """
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model = model.to(device)
+        loss_fn = torch.nn.functional.huber_loss
+        optim = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=decay)
+        scheduler = CosineAnnealingLR(optimizer=optim,T_max=annealing_range,eta_min=annealing_rate)
+        training_loader = DataLoader(dataset=train_data, batch_size=batch_size,shuffle=True)
+        test_loader = DataLoader(dataset=test_data, batch_size=batch_size,shuffle=True)
+        train_r2_values = []
+        valid_r2_values = []
+        train_rmse_values = []
+        valid_rmse_values = []
+        train_mape_values = []
+        valid_mape_values = []
+        epochs_values = []
+        early_stop = False
+        
+        early_stopping_threshold = 50
+        early_stopping_index = 1
+        best_r2 = -5
+        i = 0
+        
+        checkpoint = None
+        best_preds = None
+        best_targets = None
+        with open('training.txt', 'w') as file:
+            while i < epochs and not early_stop:
+                model.train()
+                all_targets, all_preds = [], []
+
+                for coarse_input, granular_input, param_input, target in training_loader:
+                    optim.zero_grad()
+                    pred = model(coarse_input.to(device), granular_input.to(device),param_input.to(device))
+                    loss = loss_fn(pred, target.to(device))
+                    loss.backward()
+                    optim.step()
+
+                    all_targets.append(target.detach().cpu().numpy())
+                    all_preds.append(pred.detach().cpu().numpy())
+
+                # Compute metrics after epoch
+                all_targets = np.concatenate(all_targets)
+                all_preds = np.concatenate(all_preds)
+                training_loss = np.sqrt(mean_squared_error(all_targets, all_preds))
+                r2 = r2_score(all_targets, all_preds)
+                mape = mean_absolute_percentage_error(all_targets, all_preds)
+
+                epochs_values.append(i)
+                train_rmse_values.append(training_loss)
+                train_mape_values.append(mape*100)
+                train_r2_values.append(r2)
+                file.write(f'\n---------------------------\nTraining Epoch: {i}\n')
+                file.write(f'r2 score is {r2:.3f}\n')
+                file.write(f'MAPE is {mape * 100:.2f}%\n')
+                file.write(f'RMSE is {training_loss:.3f}\n')
+                file.write('---------------------------\n')
+
+                model.eval()
+                valid_targets, valid_preds = [], []
+                with torch.no_grad():
+                    for coarse_input, granular_input, param_input, target in test_loader:
+                        pred = model(coarse_input.to(device), granular_input.to(device),param_input.to(device))
+                        valid_targets.append(target.detach().cpu().numpy())
+                        valid_preds.append(pred.detach().cpu().numpy())
+
+                valid_targets = np.concatenate(valid_targets)
+                valid_preds = np.concatenate(valid_preds)
+                valid_loss = np.sqrt(mean_squared_error(valid_targets, valid_preds))
+                valid_r2 = r2_score(valid_targets, valid_preds)
+                valid_mape = mean_absolute_percentage_error(valid_targets, valid_preds)
+                
+                #scheduler.step(mean_squared_error(valid_targets, valid_preds))
+                valid_mape_values.append(valid_mape * 100)
+                valid_rmse_values.append(valid_loss)
+                valid_r2_values.append(valid_r2)
+                
+                scheduler.step()
+                
+
+                file.write(f'\n---------------------------\nValidation Epoch: {i}\n')
+                file.write(f'r2 score is {valid_r2:.3f}\n')
+                file.write(f'MAPE is {valid_mape * 100:.2f}%\n')
+                file.write(f'RMSE is {valid_loss:.3f}\n')
+                file.write('---------------------------\n')
+                
+                # Early Stopping Mechanism
+                if valid_r2 >= best_r2:
+                    best_r2 = valid_r2
+                    checkpoint = {"Saved Model":model.state_dict()}
+                    best_preds = valid_preds
+                    best_targets = valid_targets
+                    early_stopping_index = 1
+                else:
+                    early_stopping_index += 1
+                
+                if early_stopping_index == early_stopping_threshold:
+                    early_stop = True
+                i += 1
+        
+        if create_graphs:
+            self.create_graph(epochs_values,[train_mape_values,valid_mape_values],"Multimodal MAPE","Epochs","MAPE (%)")
+            self.create_graph(epochs_values,[train_rmse_values,valid_rmse_values],"Multimodal RMSE","Epochs","RMSE")
+            self.create_graph(epochs_values,[train_r2_values,valid_r2_values],"Multimodal R2Score","Epochs","R2Score")
+            self.create_graph([i + 1 for i in range(best_targets.shape[0])],y_values=[best_targets.reshape(best_targets.shape[0]),best_preds.reshape(best_preds.shape[0])],title="Ground Truth",xlabel="Data Point",ylabel="AAWDT",ground_truth=True)
+        save_name = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+        model_copy = MultimodalFullModel().to(device=device).load_state_dict(checkpoint['Saved Model'])
+        
+        return (best_r2,save_name,model_copy,best_preds,best_targets)
     
 
 if __name__ == "__main__":
-    os_name = os.name
-    if os_name == 'nt':
-        coarse_image_path = "./data/coarse images"
-        granular_image_path = './data/granular images'
-        excel_path = './data/excel_files/duplicates_removed.csv'
-    else:
-        coarse_image_path = "/kaggle/input/coe-cnn-Experiment/coarse images"
-        granular_image_path = "/kaggle/input/coe-cnn-Experiment/granular_images"
-        excel_path = "/kaggle/input/coe-cnn-Experiment/duplicates_removed.csv"
-    
-    
-    # Hyper parameters
-    epochs = 200
-    lr = 0.001
-    batch_size = 16
-    l2_decay = 0.05
-    training_split = 0.85
-    model = MultimodalFullModel()
-    
-    # Load data
-    parametric_features_df = get_parametric_features(excel_path)
-    orderings = parametric_features_df['Estimation_point'].tolist()
-    granular_images_ndarray = convert_images_to_numpy(image_path=granular_image_path, ordering=orderings)
-    
-    coarse_images_ndarray = convert_images_to_numpy(image_path=coarse_image_path, ordering=orderings)
-    
-    aawdt_ndarray = get_regression_values(file_path=excel_path,ordering=orderings)
- 
-    # Shuffle data
-    # random_permutation = np.random.permutation(granular_images_ndarray.shape[0])
-    
-    # granular_images_ndarray = granular_images_ndarray[random_permutation]
-    
-    # coarse_images_ndarray = coarse_images_ndarray[random_permutation]
-    
-    # aawdt_ndarray = aawdt_ndarray[random_permutation]
-    
-    # parametric_features_ndarray = parametric_features_ndarray[random_permutation]
-    
-    # Split data
-    training_split_index = int(granular_images_ndarray.shape[0] * training_split)
-    
-    param_train_df = parametric_features_df[:training_split_index]
-    param_test_df = parametric_features_df[training_split_index:]
-    
-    param_train = preprocess_data(param_train_df)
-    param_test = preprocess_data(param_test_df)
-    granular_train, coarse_train,  = granular_images_ndarray[:training_split_index],coarse_images_ndarray[:training_split_index],
-    
-    granular_test, coarse_test, = granular_images_ndarray[training_split_index:],coarse_images_ndarray[training_split_index:],
-    
-    aawdt_train, aawdt_test = aawdt_ndarray[:training_split_index],aawdt_ndarray[training_split_index:]
 
     
-    train_dataset = TensorDataset(
-        torch.from_numpy(coarse_train).permute(0,3,1,2) / 255,
-        torch.from_numpy(granular_train).permute(0,3,1,2) / 255,
-        torch.from_numpy(param_train),
-        torch.from_numpy(aawdt_train)
-        )
-    test_dataset = TensorDataset(
-        torch.from_numpy(coarse_test).permute(0,3,1,2) / 255,
-        torch.from_numpy(granular_test).permute(0,3,1,2) / 255,
-        torch.from_numpy(param_test),
-        torch.from_numpy(aawdt_test)
-        )
+    lr_ranges = [0.005]
+    batch_size_ranges = [8,16,24]
+    regularization_ranges = [0.05]
+    annealing_rates = [2,5,10]
+    annealing_ranges = [10,15,30,60]
     
-    lr_ranges = [0.0005,0.001,0.002,0.004]
-    batch_size_ranges = [8,16,24,32]
-    regularization_ranges = [0.05,0.01,0.005,0.001]
-    grid_search(lr_ranges=lr_ranges,batch_size_ranges=batch_size_ranges,regularization_ranges=regularization_ranges,train_dataset=train_dataset,test_dataset=test_dataset)
-    # best_rmse, best_model, save_name = train(model=model,epochs=epochs,lr=lr,batch_size=batch_size,decay=l2_decay,train_data=train_dataset,test_data=test_dataset,create_graphs=True)
+    pbounds = {
+        'lr' : (0.0001,0.001),
+        'epochs' : (50,200),
+        'batch_size' : (5,32),
+        'decay' : (0, 0.00005),
+        'annealing_range' : (10,200),
+        'annealing_rate' : (0.0001,0.05)
+    }
+    
+    annealing_range = 45
+    annealing_rate = 0.01734348027944808
+    batch_size = 15
+    decay = 0.00002694
+    epochs = 112
+    lr = 0.0007166975503570836
+    trainer = ModelTrainer(print_graphs=True,save_model=True)
+    best_r2 = trainer.train_model(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate)
+    print(f'Best r2 score: {best_r2}')
+    # optimizer = BayesianOptimization(
+    #     f=trainer.train_model,
+    #     pbounds=pbounds,
+    #     random_state=1
+    # )
+    
+    # optimizer.maximize(
+    #     init_points = 4,
+    #     n_iter = 20
+    # )
+    
+    #grid_search(lr_ranges=lr_ranges,batch_size_ranges=batch_size_ranges,regularization_ranges=regularization_ranges,train_dataset=train_dataset,test_dataset=test_dataset,annealing_rates=annealing_rates,annealing_ranges=annealing_ranges)
+    #best_rmse, best_model, save_name = train(epochs=epochs,lr=lr,batch_size=batch_size,decay=l2_decay,train_data=train_dataset,test_data=test_dataset)
     # torch.save(best_model,save_name)
     
     
