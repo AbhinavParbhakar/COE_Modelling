@@ -239,16 +239,27 @@ class GranularImageModel(nn.Module):
         return self.flatten(x2)
    
 class MultimodalFullModel(nn.Module):
-    def __init__(self,):
+    def __init__(self,granular_image_dimension=256):
         super().__init__()
         self.flatten = nn.Flatten()
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout()
         
+        
+        granular_size_dict = {
+            256 : 540,
+            512 : 2940,
+            128 : 60
+        }
+        
+        coarse_image_size = 960
+        parametric_data_size = 512
+        
+        combination_size = granular_size_dict[granular_image_dimension] + coarse_image_size + parametric_data_size
         self.parametric_module = NN()
         self.coarse_module = CoarseImageModel()
         self.granular_module = GranularImageModel()
-        self.fc1 = nn.Linear(in_features=2012,out_features=500)
+        self.fc1 = nn.Linear(in_features=combination_size,out_features=500)
         self.fc2 = nn.Linear(in_features=500,out_features=200)
         self.fc3 = nn.Linear(in_features=200,out_features=50)
         self.fc4 = nn.Linear(in_features=50,out_features=1)
@@ -260,7 +271,6 @@ class MultimodalFullModel(nn.Module):
         granular_image_embedding = self.granular_module(granular_input)
         parametric_embeddings = self.parametric_module(parametric_input)
         parametric_embeddings = self.relu(parametric_embeddings)
-
         combination = torch.cat(tensors=(coarse_image_embedding,granular_image_embedding,parametric_embeddings),dim=1)
         combination = self.dropout(combination)
         
@@ -349,25 +359,44 @@ class ImageDataset(Dataset):
 #     torch.save(saved_model,final_save_name)
     
 class ModelTrainer():
-    def __init__(self,print_graphs:bool,save_model=False):
+    def __init__(self,print_graphs:bool,training_split:float,granular_model_size="256",save_model=False):
         os_name = os.name
+        self.granular_model_size = granular_model_size
+        
         if os_name == 'nt':
             coarse_image_path = "./data/coarse images"
             granular_image_path = './data/granular images'
             excel_path = './data/excel_files/duplicates_removed.csv'
+            model_training_locations = {
+                '256' : "/kaggle/input/coe-cnn-Experiment/granular_images",
+                '512' : "/kaggle/input/coe-cnn-Experiment/512x512-granular-images",
+                '128' : "/kaggle/input/coe-cnn-Experiment/128x128-granular-images",
+                '64' : "/kaggle/input/coe-cnn-Experiment/64x64-granular-images",
+                '32' : "/kaggle/input/coe-cnn-Experiment/32x32-granular-images"
+            }
         else:
             coarse_image_path = "/kaggle/input/coe-cnn-Experiment/coarse images"
             granular_image_path = "/kaggle/input/coe-cnn-Experiment/granular_images"
             excel_path = "/kaggle/input/coe-cnn-Experiment/duplicates_removed.csv"
+            model_training_locations = {
+                '256' : "/kaggle/input/coe-cnn-Experiment/granular_images",
+                '512' : "/kaggle/input/coe-cnn-Experiment/512x512-granular-images",
+                '128' : "/kaggle/input/coe-cnn-Experiment/128x128-granular-images",
+                '64' : "/kaggle/input/coe-cnn-Experiment/64x64-granular-images",
+                '32' : "/kaggle/input/coe-cnn-Experiment/32x32-granular-images"
+            }
         
+        if granular_model_size not in model_training_locations:
+            raise Exception(f"Granular Model must match {list(model_training_locations.keys())}")
         
+        granular_image_path = model_training_locations[granular_model_size]
         # Hyper parameters
         epochs = 200
         lr = 0.001
         batch_size = 16
         l2_decay = 0.05
-        training_split = 0.9
-        self.model = MultimodalFullModel()
+        training_split = training_split
+        self.model = MultimodalFullModel(int(granular_model_size))
         self.print_graphs = print_graphs
         self.save_model = save_model
         
@@ -742,7 +771,7 @@ class ModelTrainer():
             self.create_graph(epochs_values,[train_r2_values,valid_r2_values],"Multimodal R2Score","Epochs","R2Score")
             self.create_graph([i + 1 for i in range(best_targets.shape[0])],y_values=[best_targets.reshape(best_targets.shape[0]),best_preds.reshape(best_preds.shape[0])],title="Ground Truth",xlabel="Data Point",ylabel="AAWDT",ground_truth=True)
         save_name = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-        model_copy = MultimodalFullModel().to(device=device).load_state_dict(checkpoint['Saved Model'])
+        model_copy = MultimodalFullModel(int(self.granular_model_size)).to(device=device).load_state_dict(checkpoint['Saved Model'])
         
         return (best_r2,save_name,model_copy,best_preds,best_targets)
     
@@ -771,7 +800,7 @@ if __name__ == "__main__":
     decay = 0.00002694
     epochs = 112
     lr = 0.0007166975503570836
-    trainer = ModelTrainer(print_graphs=True,save_model=True)
+    trainer = ModelTrainer(print_graphs=True,save_model=True,training_split=0.85,granular_model_size="512")
     best_r2 = trainer.train_model(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate)
     print(f'Best r2 score: {best_r2}')
     # optimizer = BayesianOptimization(
