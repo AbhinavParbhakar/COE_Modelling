@@ -149,7 +149,345 @@ class CoarseImageModel(nn.Module):
         
         return self.flatten(x1)
 
-class GranularImageModel(nn.Module):
+class ThirtyTwoGranularImageModel(nn.Module):
+    def __init__(self,):
+        super().__init__()
+        self.max_pool = nn.MaxPool2d(kernel_size=2)
+        self.avg_pool = nn.AvgPool2d(kernel_size=2)
+        self.flatten = nn.Flatten()
+        self.relu = nn.ReLU()
+        self.granular_layer_1 = nn.Sequential(
+            nn.Conv2d(in_channels=3,out_channels=15,kernel_size=7),
+            nn.BatchNorm2d(num_features=15),
+            nn.MaxPool2d(kernel_size=3,stride=1)
+        )
+
+        self.granular_layer_2_1 = nn.Sequential(
+            nn.Conv2d(in_channels=15,out_channels=15,kernel_size=3,padding=1),
+            nn.BatchNorm2d(15),
+            nn.ReLU()
+        )
+
+        self.granular_layer_2_2 = nn.Sequential(
+            nn.Conv2d(in_channels=15,out_channels=15,kernel_size=3,padding=1),
+            nn.BatchNorm2d(15),
+            nn.ReLU()
+        )
+
+        self.granular_layer_3_1 = nn.Sequential(
+            nn.Conv2d(in_channels=15,out_channels=30,kernel_size=3,padding=1),
+            nn.BatchNorm2d(30),
+            nn.ReLU()
+        )
+
+        self.granular_layer_3_2 = nn.Sequential(
+            nn.Conv2d(in_channels=30,out_channels=30,kernel_size=3,padding=1),
+            nn.BatchNorm2d(30),
+            nn.ReLU()
+        )
+        self.granular_layer_upsample_3 = nn.Conv2d(in_channels=15,out_channels=30,kernel_size=1)
+        self.granular_layer_4_1 = nn.Sequential(
+            nn.Conv2d(in_channels=30,out_channels=45,kernel_size=3,padding=1),
+            nn.BatchNorm2d(45),
+            nn.ReLU()
+        )
+        self.granular_layer_4_2 = nn.Sequential(
+            nn.Conv2d(in_channels=45,out_channels=45,kernel_size=3,padding=1),
+            nn.BatchNorm2d(45),
+            nn.ReLU()
+        )
+        self.granular_layer_upsample_4 = nn.Conv2d(in_channels=30,out_channels=45,kernel_size=1)
+        self.granular_layer_5_1 = nn.Sequential(
+            nn.Conv2d(in_channels=45,out_channels=60,kernel_size=3,padding=1),
+            nn.BatchNorm2d(60),
+            nn.ReLU()
+        )
+        self.granular_layer_5_2 = nn.Sequential(
+            nn.Conv2d(in_channels=60,out_channels=60,kernel_size=3,padding=1),
+            nn.BatchNorm2d(60),
+            nn.ReLU()
+        )
+
+        self.granular_layer_upsample_5 = nn.Conv2d(in_channels=45,out_channels=60,kernel_size=1)
+
+    def forward(self,granular_input:torch.FloatTensor):
+        x2_layer_2_input = self.granular_layer_1(granular_input)
+
+        x2 = self.granular_layer_2_1(x2_layer_2_input)
+        x2 = self.granular_layer_2_2(x2)
+        x2  = x2 + x2_layer_2_input
+        x2 = self.max_pool(x2)
+
+        x2_layer_3_input = self.granular_layer_upsample_3(x2)
+        x2 = self.granular_layer_3_1(x2)
+        x2 = self.granular_layer_3_2(x2)
+        x2 = x2 + x2_layer_3_input
+        x2 = self.max_pool(x2)
+
+        x2_layer_4_input = self.granular_layer_upsample_4(x2)
+        x2 = self.granular_layer_4_1(x2)
+        x2 = self.granular_layer_4_2(x2)
+        x2 = x2 + x2_layer_4_input
+        x2 = self.avg_pool(x2)
+
+        return self.flatten(x2)
+
+class SixtyFourGranularImageModel(nn.Module):
+    def __init__(self,):
+        super().__init__()
+        self.max_pool = nn.MaxPool2d(kernel_size=2)
+        self.avg_pool = nn.AvgPool2d(kernel_size=2)
+        self.flatten = nn.Flatten()
+        self.relu = nn.ReLU()
+        self.granular_layer_1 = nn.Sequential(
+            nn.Conv2d(in_channels=3,out_channels=15,kernel_size=7),
+            nn.BatchNorm2d(num_features=15),
+            nn.MaxPool2d(kernel_size=3,stride=2)
+        )
+        
+        self.granular_layer_2_1 = nn.Sequential(
+            nn.Conv2d(in_channels=15,out_channels=15,kernel_size=3,padding=1),
+            nn.BatchNorm2d(15),
+            nn.ReLU()
+        )
+
+        self.granular_layer_2_2 = nn.Sequential(
+            nn.Conv2d(in_channels=15,out_channels=15,kernel_size=3,padding=1),
+            nn.BatchNorm2d(15),
+            nn.ReLU()
+        )
+        
+        self.granular_layer_3_1 = nn.Sequential(
+            nn.Conv2d(in_channels=15,out_channels=30,kernel_size=3,padding=1),
+            nn.BatchNorm2d(30),
+            nn.ReLU()          
+        )
+        
+        self.granular_layer_3_2 = nn.Sequential(
+            nn.Conv2d(in_channels=30,out_channels=30,kernel_size=3,padding=1),
+            nn.BatchNorm2d(30),
+            nn.ReLU()          
+        )
+        self.granular_layer_upsample_3 = nn.Conv2d(in_channels=15,out_channels=30,kernel_size=1)
+        self.granular_layer_4_1 = nn.Sequential(
+            nn.Conv2d(in_channels=30,out_channels=45,kernel_size=3,padding=1),
+            nn.BatchNorm2d(45),
+            nn.ReLU()
+        )
+        self.granular_layer_4_2 = nn.Sequential(
+            nn.Conv2d(in_channels=45,out_channels=45,kernel_size=3,padding=1),
+            nn.BatchNorm2d(45),
+            nn.ReLU()
+        )
+        self.granular_layer_upsample_4 = nn.Conv2d(in_channels=30,out_channels=45,kernel_size=1)
+        self.granular_layer_5_1 = nn.Sequential(
+            nn.Conv2d(in_channels=45,out_channels=60,kernel_size=3,padding=1),
+            nn.BatchNorm2d(60),
+            nn.ReLU()
+        )
+        self.granular_layer_5_2 = nn.Sequential(
+            nn.Conv2d(in_channels=60,out_channels=60,kernel_size=3,padding=1),
+            nn.BatchNorm2d(60),
+            nn.ReLU()
+        )
+        
+        self.granular_layer_upsample_5 = nn.Conv2d(in_channels=45,out_channels=60,kernel_size=1)
+        
+    def forward(self,granular_input:torch.FloatTensor):
+        x2_layer_2_input = self.granular_layer_1(granular_input)
+        
+        x2 = self.granular_layer_2_1(x2_layer_2_input)
+        x2 = self.granular_layer_2_2(x2)
+        x2  = x2 + x2_layer_2_input
+        x2 = self.max_pool(x2)
+        
+        x2_layer_3_input = self.granular_layer_upsample_3(x2)
+        x2 = self.granular_layer_3_1(x2)
+        x2 = self.granular_layer_3_2(x2)
+        x2 = x2 + x2_layer_3_input
+        x2 = self.max_pool(x2)
+
+        x2_layer_4_input = self.granular_layer_upsample_4(x2)
+        x2 = self.granular_layer_4_1(x2)
+        x2 = self.granular_layer_4_2(x2)
+        x2 = x2 + x2_layer_4_input
+        x2 = self.avg_pool(x2)
+        
+        return self.flatten(x2)
+
+class OneTwentyEightGranularImageModel(nn.Module):
+    def __init__(self,):
+        super().__init__()
+        self.max_pool = nn.MaxPool2d(kernel_size=2)
+        self.avg_pool = nn.AvgPool2d(kernel_size=2)
+        self.flatten = nn.Flatten()
+        self.relu = nn.ReLU()
+        self.granular_layer_1 = nn.Sequential(
+            nn.Conv2d(in_channels=3,out_channels=15,kernel_size=7,stride=2),
+            nn.BatchNorm2d(num_features=15),
+            nn.MaxPool2d(kernel_size=3,stride=2)
+        )
+        
+        self.granular_layer_2_1 = nn.Sequential(
+            nn.Conv2d(in_channels=15,out_channels=15,kernel_size=3,padding=1),
+            nn.BatchNorm2d(15),
+            nn.ReLU()
+        )
+
+        self.granular_layer_2_2 = nn.Sequential(
+            nn.Conv2d(in_channels=15,out_channels=15,kernel_size=3,padding=1),
+            nn.BatchNorm2d(15),
+            nn.ReLU()
+        )
+        
+        self.granular_layer_3_1 = nn.Sequential(
+            nn.Conv2d(in_channels=15,out_channels=30,kernel_size=3,padding=1),
+            nn.BatchNorm2d(30),
+            nn.ReLU()          
+        )
+        
+        self.granular_layer_3_2 = nn.Sequential(
+            nn.Conv2d(in_channels=30,out_channels=30,kernel_size=3,padding=1),
+            nn.BatchNorm2d(30),
+            nn.ReLU()          
+        )
+        self.granular_layer_upsample_3 = nn.Conv2d(in_channels=15,out_channels=30,kernel_size=1)
+        self.granular_layer_4_1 = nn.Sequential(
+            nn.Conv2d(in_channels=30,out_channels=45,kernel_size=3,padding=1),
+            nn.BatchNorm2d(45),
+            nn.ReLU()
+        )
+        self.granular_layer_4_2 = nn.Sequential(
+            nn.Conv2d(in_channels=45,out_channels=45,kernel_size=3,padding=1),
+            nn.BatchNorm2d(45),
+            nn.ReLU()
+        )
+        self.granular_layer_upsample_4 = nn.Conv2d(in_channels=30,out_channels=45,kernel_size=1)
+        self.granular_layer_5_1 = nn.Sequential(
+            nn.Conv2d(in_channels=45,out_channels=60,kernel_size=3,padding=1),
+            nn.BatchNorm2d(60),
+            nn.ReLU()
+        )
+        self.granular_layer_5_2 = nn.Sequential(
+            nn.Conv2d(in_channels=60,out_channels=60,kernel_size=3,padding=1),
+            nn.BatchNorm2d(60),
+            nn.ReLU()
+        )
+        
+        self.granular_layer_upsample_5 = nn.Conv2d(in_channels=45,out_channels=60,kernel_size=1)
+        
+    def forward(self,granular_input:torch.FloatTensor):
+        x2_layer_2_input = self.granular_layer_1(granular_input)
+        
+        x2 = self.granular_layer_2_1(x2_layer_2_input)
+        x2 = self.granular_layer_2_2(x2)
+        x2  = x2 + x2_layer_2_input
+        x2 = self.max_pool(x2)
+        
+        x2_layer_3_input = self.granular_layer_upsample_3(x2)
+        x2 = self.granular_layer_3_1(x2)
+        x2 = self.granular_layer_3_2(x2)
+        x2 = x2 + x2_layer_3_input
+        x2 = self.max_pool(x2)
+
+        x2_layer_4_input = self.granular_layer_upsample_4(x2)
+        x2 = self.granular_layer_4_1(x2)
+        x2 = self.granular_layer_4_2(x2)
+        x2 = x2 + x2_layer_4_input
+        x2 = self.avg_pool(x2)
+        
+        return self.flatten(x2)
+
+class FiveTwelveGranularImageModel(nn.Module):
+    def __init__(self,):
+        super().__init__()
+        self.max_pool = nn.MaxPool2d(kernel_size=2)
+        self.avg_pool = nn.AvgPool2d(kernel_size=3)
+        self.flatten = nn.Flatten()
+        self.relu = nn.ReLU()
+        self.granular_layer_1 = nn.Sequential(
+            nn.Conv2d(in_channels=3,out_channels=15,kernel_size=7,stride=3),
+            nn.BatchNorm2d(num_features=15),
+            nn.MaxPool2d(kernel_size=3,stride=2)
+        )
+        
+        self.granular_layer_2_1 = nn.Sequential(
+            nn.Conv2d(in_channels=15,out_channels=15,kernel_size=3,padding=1),
+            nn.BatchNorm2d(15),
+            nn.ReLU()
+        )
+
+        self.granular_layer_2_2 = nn.Sequential(
+            nn.Conv2d(in_channels=15,out_channels=15,kernel_size=3,padding=1),
+            nn.BatchNorm2d(15),
+            nn.ReLU()
+        )
+        
+        self.granular_layer_3_1 = nn.Sequential(
+            nn.Conv2d(in_channels=15,out_channels=30,kernel_size=3,padding=1),
+            nn.BatchNorm2d(30),
+            nn.ReLU()          
+        )
+        
+        self.granular_layer_3_2 = nn.Sequential(
+            nn.Conv2d(in_channels=30,out_channels=30,kernel_size=3,padding=1),
+            nn.BatchNorm2d(30),
+            nn.ReLU()          
+        )
+        self.granular_layer_upsample_3 = nn.Conv2d(in_channels=15,out_channels=30,kernel_size=1)
+        self.granular_layer_4_1 = nn.Sequential(
+            nn.Conv2d(in_channels=30,out_channels=45,kernel_size=3,padding=1),
+            nn.BatchNorm2d(45),
+            nn.ReLU()
+        )
+        self.granular_layer_4_2 = nn.Sequential(
+            nn.Conv2d(in_channels=45,out_channels=45,kernel_size=3,padding=1),
+            nn.BatchNorm2d(45),
+            nn.ReLU()
+        )
+        self.granular_layer_upsample_4 = nn.Conv2d(in_channels=30,out_channels=45,kernel_size=1)
+        self.granular_layer_5_1 = nn.Sequential(
+            nn.Conv2d(in_channels=45,out_channels=60,kernel_size=3,padding=1),
+            nn.BatchNorm2d(60),
+            nn.ReLU()
+        )
+        self.granular_layer_5_2 = nn.Sequential(
+            nn.Conv2d(in_channels=60,out_channels=60,kernel_size=3,padding=1),
+            nn.BatchNorm2d(60),
+            nn.ReLU()
+        )
+        
+        self.granular_layer_upsample_5 = nn.Conv2d(in_channels=45,out_channels=60,kernel_size=1)
+        
+    def forward(self,granular_input:torch.FloatTensor):
+        x2_layer_2_input = self.granular_layer_1(granular_input)
+        
+        x2 = self.granular_layer_2_1(x2_layer_2_input)
+        x2 = self.granular_layer_2_2(x2)
+        x2  = x2 + x2_layer_2_input
+        x2 = self.max_pool(x2)
+        
+        x2_layer_3_input = self.granular_layer_upsample_3(x2)
+        x2 = self.granular_layer_3_1(x2)
+        x2 = self.granular_layer_3_2(x2)
+        x2 = x2 + x2_layer_3_input
+        x2 = self.max_pool(x2)
+
+        x2_layer_4_input = self.granular_layer_upsample_4(x2)
+        x2 = self.granular_layer_4_1(x2)
+        x2 = self.granular_layer_4_2(x2)
+        x2 = x2 + x2_layer_4_input
+        x2 = self.max_pool(x2)
+        
+        x2_layer_5_input = self.granular_layer_upsample_5(x2)
+        x2 = self.granular_layer_5_1(x2)
+        x2 = self.granular_layer_5_2(x2)
+        x2 = x2 + x2_layer_5_input
+        x2 = self.avg_pool(x2)
+        
+        return self.flatten(x2)
+
+class TwoFiftySixGranularImageModel(nn.Module):
     def __init__(self,):
         super().__init__()
         self.max_pool = nn.MaxPool2d(kernel_size=2)
@@ -248,17 +586,27 @@ class MultimodalFullModel(nn.Module):
         
         granular_size_dict = {
             256 : 540,
-            512 : 2940,
-            128 : 60
+            512 : 540,
+            128 : 405,
+            64 : 405,
+            32 : 405,
         }
         
+        granular_model_dict = {
+            256 : TwoFiftySixGranularImageModel(),
+            512 : FiveTwelveGranularImageModel(),
+            128 : OneTwentyEightGranularImageModel(),
+            64 : SixtyFourGranularImageModel(),
+            32 : ThirtyTwoGranularImageModel(),
+        }
+            
         coarse_image_size = 960
         parametric_data_size = 512
-        
+        print(granular_image_dimension)
         combination_size = granular_size_dict[granular_image_dimension] + coarse_image_size + parametric_data_size
         self.parametric_module = NN()
         self.coarse_module = CoarseImageModel()
-        self.granular_module = GranularImageModel()
+        self.granular_module = granular_model_dict[granular_image_dimension]
         self.fc1 = nn.Linear(in_features=combination_size,out_features=500)
         self.fc2 = nn.Linear(in_features=500,out_features=200)
         self.fc3 = nn.Linear(in_features=200,out_features=50)
@@ -266,7 +614,7 @@ class MultimodalFullModel(nn.Module):
         
     
         
-    def forward(self,coarse_input:torch.FloatTensor,granular_input:torch.FloatTensor,parametric_input):
+    def forward(self,coarse_input:torch.FloatTensor,granular_input:torch.FloatTensor,parametric_input:torch.FloatTensor):
         coarse_image_embedding = self.coarse_module(coarse_input)
         granular_image_embedding = self.granular_module(granular_input)
         parametric_embeddings = self.parametric_module(parametric_input)
@@ -359,7 +707,7 @@ class ImageDataset(Dataset):
 #     torch.save(saved_model,final_save_name)
     
 class ModelTrainer():
-    def __init__(self,print_graphs:bool,training_split:float,granular_model_size="256",save_model=False):
+    def __init__(self,print_graphs:bool,training_split:float,granular_model_size="256",coarse_model_size="16",save_model=False):
         os_name = os.name
         self.granular_model_size = granular_model_size
         
@@ -367,35 +715,35 @@ class ModelTrainer():
             coarse_image_path = "./data/coarse images"
             granular_image_path = './data/granular images'
             excel_path = './data/excel_files/duplicates_removed.csv'
-            model_training_locations = {
-                '256' : "/kaggle/input/coe-cnn-Experiment/granular_images",
-                '512' : "/kaggle/input/coe-cnn-Experiment/512x512-granular-images",
-                '128' : "/kaggle/input/coe-cnn-Experiment/128x128-granular-images",
-                '64' : "/kaggle/input/coe-cnn-Experiment/64x64-granular-images",
-                '32' : "/kaggle/input/coe-cnn-Experiment/32x32-granular-images"
-            }
         else:
             coarse_image_path = "/kaggle/input/coe-cnn-Experiment/coarse images"
             granular_image_path = "/kaggle/input/coe-cnn-Experiment/granular_images"
-            excel_path = "/kaggle/input/coe-cnn-Experiment/duplicates_removed.csv"
-            model_training_locations = {
-                '256' : "/kaggle/input/coe-cnn-Experiment/granular_images",
-                '512' : "/kaggle/input/coe-cnn-Experiment/512x512-granular-images",
-                '128' : "/kaggle/input/coe-cnn-Experiment/128x128-granular-images",
-                '64' : "/kaggle/input/coe-cnn-Experiment/64x64-granular-images",
-                '32' : "/kaggle/input/coe-cnn-Experiment/32x32-granular-images"
-            }
+            excel_path = "/kaggle/input/coe-cnn-Experiment/data_from_chloe.csv"
         
-        if granular_model_size not in model_training_locations:
-            raise Exception(f"Granular Model must match {list(model_training_locations.keys())}")
+        granular_model_training_locations = {
+            '256' : "/kaggle/input/coe-cnn-Experiment/granular_images",
+            '512' : "/kaggle/input/coe-cnn-Experiment/512x512-granular-images",
+            '128' : "/kaggle/input/coe-cnn-Experiment/128x128-granular-images",
+            '64' : "/kaggle/input/coe-cnn-Experiment/64x64-granular-images",
+            '32' : "/kaggle/input/coe-cnn-Experiment/32x32-granular-images"
+        }
+
+        coarse_model_training_locations = {
+            '32' : "/kaggle/input/coe-cnn-Experiment/32x32-coarse-images",
+            '16' : "/kaggle/input/coe-cnn-Experiment/16x16-coarse-images",
+            '8' : "/kaggle/input/coe-cnn-Experiment/8x8-coarse-images",
+            '4' : "/kaggle/input/coe-cnn-Experiment/4x4-coarse-images",
+            '2' : "/kaggle/input/coe-cnn-Experiment/2x2-coarse-images"
+        }
         
-        granular_image_path = model_training_locations[granular_model_size]
-        # Hyper parameters
-        epochs = 200
-        lr = 0.001
-        batch_size = 16
-        l2_decay = 0.05
-        training_split = training_split
+        if granular_model_size not in granular_model_training_locations:
+            raise Exception(f"Granular Model must match {list(granular_model_training_locations.keys())}")
+
+        if coarse_model_size not in coarse_model_training_locations:
+            raise Exception(f"Coarse Model must match {list(coarse_model_training_locations.keys())}")
+        
+        granular_image_path = granular_model_training_locations[granular_model_size]
+        coarse_image_path = coarse_model_training_locations[coarse_model_size]
         self.model = MultimodalFullModel(int(granular_model_size))
         self.print_graphs = print_graphs
         self.save_model = save_model
@@ -405,21 +753,9 @@ class ModelTrainer():
         self.excel_path = excel_path
         orderings = parametric_features_df['Estimation_point'].tolist()
         granular_images_ndarray = self.convert_images_to_numpy(image_path=granular_image_path, ordering=orderings)
-        
         coarse_images_ndarray = self.convert_images_to_numpy(image_path=coarse_image_path, ordering=orderings)
         
         aawdt_ndarray = self.get_regression_values(file_path=excel_path,ordering=orderings)
-    
-        # Shuffle data
-        # random_permutation = np.random.permutation(granular_images_ndarray.shape[0])
-        
-        # granular_images_ndarray = granular_images_ndarray[random_permutation]
-        
-        # coarse_images_ndarray = coarse_images_ndarray[random_permutation]
-        
-        # aawdt_ndarray = aawdt_ndarray[random_permutation]
-        
-        # parametric_features_ndarray = parametric_features_ndarray[random_permutation]
         
         # Split data
         training_split_index = int(granular_images_ndarray.shape[0] * training_split)
@@ -430,7 +766,7 @@ class ModelTrainer():
         param_train = self.preprocess_data(param_train_df)
         param_test = self.preprocess_data(param_test_df)
         granular_train, coarse_train,  = granular_images_ndarray[:training_split_index],coarse_images_ndarray[:training_split_index],
-        
+         
         granular_test, coarse_test, = granular_images_ndarray[training_split_index:],coarse_images_ndarray[training_split_index:],
         
         aawdt_train, aawdt_test = aawdt_ndarray[:training_split_index],aawdt_ndarray[training_split_index:]
@@ -685,7 +1021,7 @@ class ModelTrainer():
         
         early_stopping_threshold = 50
         early_stopping_index = 1
-        best_r2 = -5
+        best_mape = 200
         i = 0
         
         checkpoint = None
@@ -752,8 +1088,8 @@ class ModelTrainer():
                 file.write('---------------------------\n')
                 
                 # Early Stopping Mechanism
-                if valid_r2 >= best_r2:
-                    best_r2 = valid_r2
+                if valid_mape < best_mape:
+                    best_mape = valid_mape
                     checkpoint = {"Saved Model":model.state_dict()}
                     best_preds = valid_preds
                     best_targets = valid_targets
@@ -773,7 +1109,7 @@ class ModelTrainer():
         save_name = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
         model_copy = MultimodalFullModel(int(self.granular_model_size)).to(device=device).load_state_dict(checkpoint['Saved Model'])
         
-        return (best_r2,save_name,model_copy,best_preds,best_targets)
+        return (best_mape,save_name,model_copy,best_preds,best_targets)
     
 
 if __name__ == "__main__":
@@ -800,9 +1136,30 @@ if __name__ == "__main__":
     decay = 0.00002694
     epochs = 112
     lr = 0.0007166975503570836
-    trainer = ModelTrainer(print_graphs=True,save_model=True,training_split=0.85,granular_model_size="512")
+    
+    coarse_param = ['32', '16', '8', '4', '2']
+    granular_param = ['256', '512', '128', '64', '32']
+
+    save_data = {
+        'Granular Param' : [],
+        'Coarse Param' : [],
+        'Score' : []
+    }
+    
+    
+    # for coarse in coarse_param:
+    #     for granular in granular_param:
+    #         save_data['Coarse Param'].append(coarse)
+    #         save_data['Granular Param'].append(granular)
+    trainer = ModelTrainer(print_graphs=True,save_model=False,training_split=0.85,granular_model_size="256",coarse_model_size="4")
     best_r2 = trainer.train_model(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate)
-    print(f'Best r2 score: {best_r2}')
+    results = trainer.get_training_featues_with_predictions()
+    results.to_excel('Prediction Results.xlsx',index=False)
+    print(best_r2)
+    #         save_data['Score'].append(best_r2)
+            
+    # save_df = pd.DataFrame(data=save_data)
+    # save_df.to_excel('Sensitivity_results.xlsx')
     # optimizer = BayesianOptimization(
     #     f=trainer.train_model,
     #     pbounds=pbounds,
@@ -813,7 +1170,7 @@ if __name__ == "__main__":
     #     init_points = 4,
     #     n_iter = 20
     # )
-    
+    # print(optimizer.max)
     #grid_search(lr_ranges=lr_ranges,batch_size_ranges=batch_size_ranges,regularization_ranges=regularization_ranges,train_dataset=train_dataset,test_dataset=test_dataset,annealing_rates=annealing_rates,annealing_ranges=annealing_ranges)
     #best_rmse, best_model, save_name = train(epochs=epochs,lr=lr,batch_size=batch_size,decay=l2_decay,train_data=train_dataset,test_data=test_dataset)
     # torch.save(best_model,save_name)
