@@ -15,6 +15,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder,StandardScaler
 import sys
 import datetime
+import math
 
 # Check if running on Kaggle and install dependencies if not already installed
 if "KAGGLE_KERNEL_RUN_TYPE" in os.environ:
@@ -718,7 +719,7 @@ class ModelTrainer():
         else:
             coarse_image_path = "/kaggle/input/coe-cnn-Experiment/coarse images"
             granular_image_path = "/kaggle/input/coe-cnn-Experiment/granular_images"
-            excel_path = "/kaggle/input/coe-cnn-Experiment/data_from_chloe.csv"
+            excel_path = "/kaggle/input/coe-cnn-Experiment/80percent_removed.csv"
         
         granular_model_training_locations = {
             '256' : "/kaggle/input/coe-cnn-Experiment/granular_images",
@@ -744,18 +745,23 @@ class ModelTrainer():
         
         granular_image_path = granular_model_training_locations[granular_model_size]
         coarse_image_path = coarse_model_training_locations[coarse_model_size]
-        self.model = MultimodalFullModel(int(granular_model_size))
         self.print_graphs = print_graphs
         self.save_model = save_model
         
         # Load data
-        parametric_features_df = self.get_parametric_features(excel_path,train_split=training_split)
+        orderings, parametric_features_df = self.get_parametric_features(excel_path)
         self.excel_path = excel_path
-        orderings = parametric_features_df['Estimation_point'].tolist()
         granular_images_ndarray = self.convert_images_to_numpy(image_path=granular_image_path, ordering=orderings)
         coarse_images_ndarray = self.convert_images_to_numpy(image_path=coarse_image_path, ordering=orderings)
         
         aawdt_ndarray = self.get_regression_values(file_path=excel_path,ordering=orderings)
+        
+        # Attach variables to object
+        self.granular_model_size = granular_model_size
+        self.parametric_features_df = parametric_features_df
+        self.granular_images_ndarray = granular_images_ndarray
+        self.coarse_images_ndarray = coarse_images_ndarray
+        self.aawdt_ndarray = aawdt_ndarray
         
         # Split data
         training_split_index = int(granular_images_ndarray.shape[0] * training_split)
@@ -794,12 +800,11 @@ class ModelTrainer():
         """
         transform = ColumnTransformer(transformers=[
             ('Standard Scale',StandardScaler(),['Latitude','Longitude','Speed',]),
-            ('One Hot',OneHotEncoder(),['Road_Class'])
-        ])
+        ],remainder='passthrough')
         
         return transform.fit_transform(df).astype(np.float32)
 
-    def get_parametric_features(self,file_path:str, train_split=0.85)->pd.DataFrame:
+    def get_parametric_features(self,file_path:str)->tuple[list,pd.DataFrame]:
         """
         Create a ``pandas.DataFrame`` containing features.
         
@@ -816,23 +821,13 @@ class ModelTrainer():
             Features in the form of a df.
         """
         df = pd.read_csv(file_path)
-        unique_split_values = df['Road_Class'].unique()
-        train_groupings = []
-        test_groupings = []
+        df[['Collector','Local','Major Arterial','Minor Arterial']] = pd.get_dummies(df['Road_Class'],dtype=int)
+        shuffle_index = pd.Series(np.random.permutation(df.shape[0]))
+        df = df.iloc[shuffle_index]
+        ordering = df['Estimation_point'].tolist()
+        df = df[['Latitude','Longitude','Collector','Local','Major Arterial','Minor Arterial','Speed']]
         
-        for unique_val in unique_split_values:
-            unique_val_df = df[df['Road_Class'] == unique_val]
-            train_index = int(unique_val_df.shape[0] * train_split)
-            train_data = unique_val_df[:train_index]
-            test_data = unique_val_df[train_index:]
-            train_groupings.append(train_data)
-            test_groupings.append(test_data)
-        
-        train_df = pd.concat(train_groupings,axis=0)
-        test_df = pd.concat(test_groupings,axis=0)
-        df = pd.concat([train_df,test_df],axis=0)
-        
-        return df
+        return ordering, df
 
     def convert_images_to_numpy(self,image_path:str,ordering:list)->np.ndarray:
         """
@@ -959,9 +954,74 @@ class ModelTrainer():
             plt.legend()
             plt.grid(visible=True,)
             plt.title(title)
-            plt.savefig(f'{title}.png') 
+            plt.savefig(f'{title}.png')
+    
+    def kfold(self,epochs: int, lr: float, batch_size: int, decay: float,annealing_rate=0.0001,annealing_range=30,num_fold=10):
+        """
+        Conduct k-fold CV
+        
+        
+        Parameters
+        ----------
+            num_fold : ``int``
+                The number of folds to use during Cross Validation 
+        """
+        num_samples = self.parametric_features_df.shape[0]
+        fold_breaks = math.ceil(num_samples / num_fold)
+        fold_indices = [min(i * fold_breaks,num_samples) for i in range(num_fold + 1)]
+        fold_subsets = []
+        avg_score = 0
+        dataframes = []
+        
+        i = 1
+        while i <= len(fold_indices):
+            if i != len(fold_indices):
+                val_indices = [i for i in range(fold_indices[i-1],fold_indices[i])]
+                training_indices = [i for i in range(0,fold_indices[i-1])]
+                training_indices.extend([i for i in range(fold_indices[i],num_samples)])
+                fold_subsets.append((training_indices,val_indices))
+            i += 1
+        
+        for training_indices, val_indices in fold_subsets:
+            param_train_df = self.parametric_features_df.iloc[training_indices]
+            param_test_df = self.parametric_features_df.iloc[val_indices]
+            
+            param_train = self.preprocess_data(param_train_df)
+            param_test = self.preprocess_data(param_test_df)
+            granular_train, coarse_train,  = self.granular_images_ndarray[training_indices],self.coarse_images_ndarray[training_indices],
+            
+            granular_test, coarse_test = self.granular_images_ndarray[val_indices],self.coarse_images_ndarray[val_indices],
+            
+            aawdt_train, aawdt_test = self.aawdt_ndarray[training_indices],self.aawdt_ndarray[val_indices]
+
+            
+            self.train_dataset = TensorDataset(
+                torch.from_numpy(coarse_train).permute(0,3,1,2) / 255,
+                torch.from_numpy(granular_train).permute(0,3,1,2) / 255,
+                torch.from_numpy(param_train),
+                torch.from_numpy(aawdt_train)
+                )
+            self.test_dataset = TensorDataset(
+                torch.from_numpy(coarse_test).permute(0,3,1,2) / 255,
+                torch.from_numpy(granular_test).permute(0,3,1,2) / 255,
+                torch.from_numpy(param_test),
+                torch.from_numpy(aawdt_test)
+                )
+            
+            metric = self.train_model(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_rate=annealing_rate,annealing_range=annealing_range)
+            results = self.get_training_featues_with_predictions()
+            dataframes.append(results)
+            avg_score += metric
+        
+        final_result = pd.concat(objs=dataframes,axis=0,ignore_index=True)
+        final_result.to_excel(f'Final_result_80percent__{num_fold}_fold_CV.xlsx',index=False)
+        return avg_score / num_fold
+            
+            
+        
     
     def train_model(self,epochs: int, lr: float, batch_size: int, decay: float,annealing_rate=0.0001,annealing_range=30):
+        self.model = MultimodalFullModel(int(self.granular_model_size))
         best_r2,save_name,model_copy,best_preds,best_targets = self.train(model=self.model,epochs=int(epochs),lr=lr,batch_size=int(batch_size),decay=decay,annealing_range=int(annealing_range),annealing_rate=annealing_rate,train_data=self.train_dataset,test_data=self.test_dataset,create_graphs=self.print_graphs)
         self.best_preds = best_preds
         self.best_targets = best_targets
@@ -1008,7 +1068,7 @@ class ModelTrainer():
         loss_fn = torch.nn.functional.huber_loss
         optim = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=decay)
         scheduler = CosineAnnealingLR(optimizer=optim,T_max=annealing_range,eta_min=annealing_rate)
-        training_loader = DataLoader(dataset=train_data, batch_size=batch_size,shuffle=True)
+        training_loader = DataLoader(dataset=train_data, batch_size=batch_size,shuffle=True,drop_last=True)
         test_loader = DataLoader(dataset=test_data, batch_size=batch_size,shuffle=True)
         train_r2_values = []
         valid_r2_values = []
@@ -1151,11 +1211,13 @@ if __name__ == "__main__":
     #     for granular in granular_param:
     #         save_data['Coarse Param'].append(coarse)
     #         save_data['Granular Param'].append(granular)
-    trainer = ModelTrainer(print_graphs=True,save_model=False,training_split=0.85,granular_model_size="256",coarse_model_size="4")
-    best_r2 = trainer.train_model(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate)
-    results = trainer.get_training_featues_with_predictions()
-    results.to_excel('Prediction Results.xlsx',index=False)
-    print(best_r2)
+    trainer = ModelTrainer(print_graphs=False,save_model=False,training_split=0.85,granular_model_size="256",coarse_model_size="4")
+    score = trainer.kfold(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate,num_fold=10)
+    print(score)
+    # best_r2 = trainer.train_model(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate)
+    # results = trainer.get_training_featues_with_predictions()
+    # results.to_excel('Prediction Results.xlsx',index=False)
+    # print(best_r2)
     #         save_data['Score'].append(best_r2)
             
     # save_df = pd.DataFrame(data=save_data)
