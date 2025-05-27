@@ -38,7 +38,7 @@ class NN(nn.Module):
     def __init__(self):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(7,64),
+            nn.Linear(8,64),
             nn.BatchNorm1d(64),
             nn.ReLU(),
             
@@ -719,10 +719,10 @@ class ModelTrainer():
         else:
             coarse_image_path = "/kaggle/input/coe-cnn-Experiment/coarse images"
             granular_image_path = "/kaggle/input/coe-cnn-Experiment/granular_images"
-            excel_path = "/kaggle/input/coe-cnn-Experiment/80percent_removed.csv"
+            excel_path = "/kaggle/input/coe-cnn-Experiment/745_points.csv"
         
         granular_model_training_locations = {
-            '256' : "/kaggle/input/coe-cnn-Experiment/granular_images",
+            '256' : "/kaggle/input/coe-cnn-Experiment/high_res_granular",
             '512' : "/kaggle/input/coe-cnn-Experiment/512x512-granular-images",
             '128' : "/kaggle/input/coe-cnn-Experiment/128x128-granular-images",
             '64' : "/kaggle/input/coe-cnn-Experiment/64x64-granular-images",
@@ -799,7 +799,7 @@ class ModelTrainer():
         Then return the output as a nd.ndarray 
         """
         transform = ColumnTransformer(transformers=[
-            ('Standard Scale',StandardScaler(),['Latitude','Longitude','Speed',]),
+            ('Standard Scale',StandardScaler(),['Lat','Long','Speed','Lanes']),
         ],remainder='passthrough')
         
         return transform.fit_transform(df).astype(np.float32)
@@ -821,11 +821,11 @@ class ModelTrainer():
             Features in the form of a df.
         """
         df = pd.read_csv(file_path)
-        df[['Collector','Local','Major Arterial','Minor Arterial']] = pd.get_dummies(df['Road_Class'],dtype=int)
+        df[['Collector','Local','Major Arterial','Minor Arterial']] = pd.get_dummies(df['Road Class'],dtype=int)
         shuffle_index = pd.Series(np.random.permutation(df.shape[0]))
         df = df.iloc[shuffle_index]
         ordering = df['Estimation_point'].tolist()
-        df = df[['Latitude','Longitude','Collector','Local','Major Arterial','Minor Arterial','Speed']]
+        df = df[['Lat','Long','Collector','Local','Major Arterial','Minor Arterial','Speed','Lanes']]
         
         return ordering, df
 
@@ -856,7 +856,9 @@ class ModelTrainer():
         
         
         for dirpath,dirnames,filenames in nested_path_generator:
-            image_paths = {name.split('.')[0] : os.path.join(dirpath,name) for name in filenames}  
+            image_paths = {name.split('.')[0] : os.path.join(dirpath,name) for name in filenames}
+            
+            
             
         for file_name in file_names:
             image_path = image_paths[str(int(file_name))]
@@ -956,13 +958,16 @@ class ModelTrainer():
             plt.title(title)
             plt.savefig(f'{title}.png')
     
-    def kfold(self,epochs: int, lr: float, batch_size: int, decay: float,annealing_rate=0.0001,annealing_range=30,num_fold=10):
+    def kfold(self,epochs: int, lr: float, batch_size: int, decay: float,annealing_rate=0.0001,annealing_range=30,num_fold=10,save_name="kfold_results"):
         """
-        Conduct k-fold CV
+        Conduct k-fold CV, and saves the output results as an excel file under the name ``num_fold`` ``save_name``.xlsx.
+        Returns the average MAPE across all folds.
         
         
         Parameters
         ----------
+            epochs: ``int``
+                The number of epochs
             num_fold : ``int``
                 The number of folds to use during Cross Validation 
         """
@@ -1014,7 +1019,7 @@ class ModelTrainer():
             avg_score += metric
         
         final_result = pd.concat(objs=dataframes,axis=0,ignore_index=True)
-        final_result.to_excel(f'Final_result_80percent__{num_fold}_fold_CV.xlsx',index=False)
+        final_result.to_excel(f'{num_fold}{save_name}.xlsx',index=False)
         return avg_score / num_fold
             
             
