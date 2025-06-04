@@ -38,7 +38,7 @@ class NN(nn.Module):
     def __init__(self):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(8,64),
+            nn.Linear(11,64),
             nn.BatchNorm1d(64),
             nn.ReLU(),
             
@@ -50,9 +50,9 @@ class NN(nn.Module):
             nn.BatchNorm1d(256),
             nn.ReLU(),
             
-            nn.Linear(256,512),
-            nn.BatchNorm1d(512),
-            nn.ReLU(),
+            # nn.Linear(256,325),
+            # nn.BatchNorm1d(325),
+            # nn.ReLU(),
             
         )
     
@@ -582,6 +582,7 @@ class MultimodalFullModel(nn.Module):
         super().__init__()
         self.flatten = nn.Flatten()
         self.relu = nn.ReLU()
+        self.softmax = nn.Softmax(dim=1)
         self.dropout = nn.Dropout()
         
         
@@ -600,27 +601,48 @@ class MultimodalFullModel(nn.Module):
             64 : SixtyFourGranularImageModel(),
             32 : ThirtyTwoGranularImageModel(),
         }
-            
-        coarse_image_size = 960
-        parametric_data_size = 512
-        print(granular_image_dimension)
-        combination_size = granular_size_dict[granular_image_dimension] + coarse_image_size + parametric_data_size
+
+        self.key_dimension = 200
+        self.value_dimension = 256
+        coarse_image_size = 240
+        parametric_data_size = 256
+        # combination_size = granular_size_dict[granular_image_dimension] + coarse_image_size + parametric_data_size
+        combination_size = self.value_dimension + parametric_data_size
         self.parametric_module = NN()
         self.coarse_module = CoarseImageModel()
         self.granular_module = granular_model_dict[granular_image_dimension]
+        # self.aerial_module = granular_model_dict[256]
         self.fc1 = nn.Linear(in_features=combination_size,out_features=500)
         self.fc2 = nn.Linear(in_features=500,out_features=200)
         self.fc3 = nn.Linear(in_features=200,out_features=50)
         self.fc4 = nn.Linear(in_features=50,out_features=1)
+        
+
+        self.query_weight_coarse_image = nn.Linear(in_features=coarse_image_size,out_features=self.key_dimension,bias=False)
+        self.key_weight_granular_image = nn.Linear(in_features=granular_size_dict[granular_image_dimension],out_features=self.key_dimension,bias=False)
+        self.value_weight_granular_image = nn.Linear(in_features=granular_size_dict[granular_image_dimension],out_features=self.value_dimension,bias=False)
         
     
         
     def forward(self,coarse_input:torch.FloatTensor,granular_input:torch.FloatTensor,parametric_input:torch.FloatTensor):
         coarse_image_embedding = self.coarse_module(coarse_input)
         granular_image_embedding = self.granular_module(granular_input)
+        # aerial_image_embedding = self.aerial_module(aerial_input)
+        
         parametric_embeddings = self.parametric_module(parametric_input)
         parametric_embeddings = self.relu(parametric_embeddings)
-        combination = torch.cat(tensors=(coarse_image_embedding,granular_image_embedding,parametric_embeddings),dim=1)
+        
+        
+        # Implement cross attention between images
+        query = self.query_weight_coarse_image(coarse_image_embedding)
+        key = self.key_weight_granular_image(granular_image_embedding)
+        value = self.value_weight_granular_image(granular_image_embedding)
+        
+        query_key_output = self.softmax(torch.mm(input=query,mat2=key.T) / math.sqrt(self.key_dimension))
+        image_attention_output = torch.mm(query_key_output,value)
+        
+        
+        combination = torch.cat(tensors=(image_attention_output,parametric_embeddings),dim=1)
         combination = self.dropout(combination)
         
         output = self.fc1(combination)
@@ -719,10 +741,10 @@ class ModelTrainer():
         else:
             coarse_image_path = "/kaggle/input/coe-cnn-Experiment/coarse images"
             granular_image_path = "/kaggle/input/coe-cnn-Experiment/granular_images"
-            excel_path = "/kaggle/input/coe-cnn-Experiment/745_points.csv"
+            excel_path = "/kaggle/input/coe-cnn-Experiment/Set2_version_3.csv"
         
         granular_model_training_locations = {
-            '256' : "/kaggle/input/coe-cnn-Experiment/high_res_granular",
+            '256' : "/kaggle/input/coe-cnn-Experiment/all_high_res",
             '512' : "/kaggle/input/coe-cnn-Experiment/512x512-granular-images",
             '128' : "/kaggle/input/coe-cnn-Experiment/128x128-granular-images",
             '64' : "/kaggle/input/coe-cnn-Experiment/64x64-granular-images",
@@ -731,11 +753,13 @@ class ModelTrainer():
 
         coarse_model_training_locations = {
             '32' : "/kaggle/input/coe-cnn-Experiment/32x32-coarse-images",
-            '16' : "/kaggle/input/coe-cnn-Experiment/16x16-coarse-images",
+            '16' : "/kaggle/input/coe-cnn-Experiment/16x16-coarse_IQR",
             '8' : "/kaggle/input/coe-cnn-Experiment/8x8-coarse-images",
             '4' : "/kaggle/input/coe-cnn-Experiment/4x4-coarse-images",
             '2' : "/kaggle/input/coe-cnn-Experiment/2x2-coarse-images"
         }
+        
+        # aerial_images_path = "/kaggle/input/coe-cnn-Experiment/high_res_granular"
         
         if granular_model_size not in granular_model_training_locations:
             raise Exception(f"Granular Model must match {list(granular_model_training_locations.keys())}")
@@ -753,6 +777,7 @@ class ModelTrainer():
         self.excel_path = excel_path
         granular_images_ndarray = self.convert_images_to_numpy(image_path=granular_image_path, ordering=orderings)
         coarse_images_ndarray = self.convert_images_to_numpy(image_path=coarse_image_path, ordering=orderings)
+        # aerial_images_ndarray = self.convert_images_to_numpy(image_path=aerial_images_path,ordering=orderings)
         
         aawdt_ndarray = self.get_regression_values(file_path=excel_path,ordering=orderings)
         
@@ -760,6 +785,7 @@ class ModelTrainer():
         self.granular_model_size = granular_model_size
         self.parametric_features_df = parametric_features_df
         self.granular_images_ndarray = granular_images_ndarray
+        # self.aerial_images_ndarray = aerial_images_ndarray
         self.coarse_images_ndarray = coarse_images_ndarray
         self.aawdt_ndarray = aawdt_ndarray
         
@@ -775,18 +801,22 @@ class ModelTrainer():
          
         granular_test, coarse_test, = granular_images_ndarray[training_split_index:],coarse_images_ndarray[training_split_index:],
         
+        # aerial_train, aerial_test = aerial_images_ndarray[:training_split_index],aerial_images_ndarray[training_split_index:]
+        
         aawdt_train, aawdt_test = aawdt_ndarray[:training_split_index],aawdt_ndarray[training_split_index:]
 
         
         self.train_dataset = TensorDataset(
             torch.from_numpy(coarse_train).permute(0,3,1,2) / 255,
             torch.from_numpy(granular_train).permute(0,3,1,2) / 255,
+            # torch.from_numpy(aerial_train).permute(0,3,1,2) / 255,
             torch.from_numpy(param_train),
             torch.from_numpy(aawdt_train)
             )
         self.test_dataset = TensorDataset(
             torch.from_numpy(coarse_test).permute(0,3,1,2) / 255,
             torch.from_numpy(granular_test).permute(0,3,1,2) / 255,
+            # torch.from_numpy(aerial_test).permute(0,3,1,2) / 255,
             torch.from_numpy(param_test),
             torch.from_numpy(aawdt_test)
             )
@@ -799,7 +829,7 @@ class ModelTrainer():
         Then return the output as a nd.ndarray 
         """
         transform = ColumnTransformer(transformers=[
-            ('Standard Scale',StandardScaler(),['Lat','Long','Speed','Lanes']),
+            ('Standard Scale',StandardScaler(),['Lat','Long','Speed','Lanes','Population2021','PopPerSqKm2021','Out_of_range']),
         ],remainder='passthrough')
         
         return transform.fit_transform(df).astype(np.float32)
@@ -825,7 +855,7 @@ class ModelTrainer():
         shuffle_index = pd.Series(np.random.permutation(df.shape[0]))
         df = df.iloc[shuffle_index]
         ordering = df['Estimation_point'].tolist()
-        df = df[['Lat','Long','Collector','Local','Major Arterial','Minor Arterial','Speed','Lanes']]
+        df = df[['Lat','Long','Collector','Local','Major Arterial','Minor Arterial','Speed','Lanes','Population2021','PopPerSqKm2021','Out_of_range']]
         
         return ordering, df
 
@@ -987,6 +1017,7 @@ class ModelTrainer():
                 fold_subsets.append((training_indices,val_indices))
             i += 1
         
+        fold = 1
         for training_indices, val_indices in fold_subsets:
             param_train_df = self.parametric_features_df.iloc[training_indices]
             param_test_df = self.parametric_features_df.iloc[val_indices]
@@ -998,25 +1029,31 @@ class ModelTrainer():
             granular_test, coarse_test = self.granular_images_ndarray[val_indices],self.coarse_images_ndarray[val_indices],
             
             aawdt_train, aawdt_test = self.aawdt_ndarray[training_indices],self.aawdt_ndarray[val_indices]
+            
+            # aerial_train, aerial_test = self.aerial_images_ndarray[training_indices],self.aerial_images_ndarray[val_indices]
 
             
             self.train_dataset = TensorDataset(
                 torch.from_numpy(coarse_train).permute(0,3,1,2) / 255,
                 torch.from_numpy(granular_train).permute(0,3,1,2) / 255,
+                # torch.from_numpy(aerial_train).permute(0,3,1,2) / 255,
                 torch.from_numpy(param_train),
                 torch.from_numpy(aawdt_train)
                 )
             self.test_dataset = TensorDataset(
                 torch.from_numpy(coarse_test).permute(0,3,1,2) / 255,
                 torch.from_numpy(granular_test).permute(0,3,1,2) / 255,
+                # torch.from_numpy(aerial_test).permute(0,3,1,2) / 255,
                 torch.from_numpy(param_test),
                 torch.from_numpy(aawdt_test)
                 )
             
             metric = self.train_model(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_rate=annealing_rate,annealing_range=annealing_range)
+            print(f'Metric for fold {fold}: {metric}')
             results = self.get_training_featues_with_predictions()
             dataframes.append(results)
             avg_score += metric
+            fold += 1
         
         final_result = pd.concat(objs=dataframes,axis=0,ignore_index=True)
         final_result.to_excel(f'{num_fold}{save_name}.xlsx',index=False)
@@ -1216,7 +1253,7 @@ if __name__ == "__main__":
     #     for granular in granular_param:
     #         save_data['Coarse Param'].append(coarse)
     #         save_data['Granular Param'].append(granular)
-    trainer = ModelTrainer(print_graphs=False,save_model=False,training_split=0.85,granular_model_size="256",coarse_model_size="4")
+    trainer = ModelTrainer(print_graphs=False,save_model=False,training_split=0.85,granular_model_size="256",coarse_model_size="16")
     score = trainer.kfold(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate,num_fold=10)
     print(score)
     # best_r2 = trainer.train_model(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate)
