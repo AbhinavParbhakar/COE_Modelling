@@ -38,7 +38,7 @@ class NN(nn.Module):
     def __init__(self):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(11,64),
+            nn.Linear(10,64),
             nn.BatchNorm1d(64),
             nn.ReLU(),
             
@@ -148,7 +148,7 @@ class CoarseImageModel(nn.Module):
         x1 = x1 + x1_layer_5_input
         x1 = self.avg_pool(x1)
         
-        return self.flatten(x1)
+        return x1
 
 class ThirtyTwoGranularImageModel(nn.Module):
     def __init__(self,):
@@ -575,14 +575,14 @@ class TwoFiftySixGranularImageModel(nn.Module):
         x2 = x2 + x2_layer_5_input
         x2 = self.avg_pool(x2)
         
-        return self.flatten(x2)
+        return x2
    
 class MultimodalFullModel(nn.Module):
     def __init__(self,granular_image_dimension=256):
         super().__init__()
         self.flatten = nn.Flatten()
         self.relu = nn.ReLU()
-        self.softmax = nn.Softmax(dim=1)
+        self.softmax = nn.Softmax(dim=2)
         self.dropout = nn.Dropout()
         
         
@@ -602,27 +602,129 @@ class MultimodalFullModel(nn.Module):
             32 : ThirtyTwoGranularImageModel(),
         }
 
-        self.key_dimension = 200
-        self.value_dimension = 256
+        self.key_dimension = 120
+        self.value_dimension = 60
+        
+        
+        self.param_key_dimension = 100
+        self.param_value_dimension = 2
+        
+        
         coarse_image_size = 240
         parametric_data_size = 256
         # combination_size = granular_size_dict[granular_image_dimension] + coarse_image_size + parametric_data_size
-        combination_size = self.value_dimension + parametric_data_size
+        combination_size = granular_size_dict[granular_image_dimension] + parametric_data_size + coarse_image_size
         self.parametric_module = NN()
         self.coarse_module = CoarseImageModel()
         self.granular_module = granular_model_dict[granular_image_dimension]
         # self.aerial_module = granular_model_dict[256]
-        self.fc1 = nn.Linear(in_features=combination_size,out_features=500)
+        self.fc1 = nn.Linear(in_features=1292,out_features=500)
         self.fc2 = nn.Linear(in_features=500,out_features=200)
         self.fc3 = nn.Linear(in_features=200,out_features=50)
         self.fc4 = nn.Linear(in_features=50,out_features=1)
         
-
-        self.query_weight_coarse_image = nn.Linear(in_features=coarse_image_size,out_features=self.key_dimension,bias=False)
-        self.key_weight_granular_image = nn.Linear(in_features=granular_size_dict[granular_image_dimension],out_features=self.key_dimension,bias=False)
-        self.value_weight_granular_image = nn.Linear(in_features=granular_size_dict[granular_image_dimension],out_features=self.value_dimension,bias=False)
         
+        self.query_weight_granular = nn.Conv2d(in_channels=60,out_channels=self.key_dimension,kernel_size=1,bias=False)
+        self.key_weight_granular = nn.Conv2d(in_channels=60,out_channels=self.key_dimension,kernel_size=1,bias=False)
+        self.value_weight_granular = nn.Conv2d(in_channels=60,out_channels=self.value_dimension,kernel_size=1,bias=False)
+        
+        self.query_weight_coarse = nn.Conv2d(in_channels=60,out_channels=self.key_dimension,kernel_size=1,bias=False)
+        self.key_weight_coarse = nn.Conv2d(in_channels=60,out_channels=self.key_dimension,kernel_size=1,bias=False)
+        self.value_weight_coarse = nn.Conv2d(in_channels=60,out_channels=self.value_dimension,kernel_size=1,bias=False)
+        
+        self.query_weight_image = nn.Linear(in_features=self.value_dimension,out_features=self.key_dimension,bias=False)
+        
+        
+        self.query_weight_param = nn.Linear(in_features=1,out_features=self.param_key_dimension,bias=False)
+        self.key_weight_param = nn.Linear(in_features=1,out_features=self.param_key_dimension,bias=False)
+        self.value_weight_param = nn.Linear(in_features=1,out_features=self.param_value_dimension,bias=False)
+
+
+    def self_attention_coarse_image_embedding(self,coarse_image_embedding:torch.Tensor)->torch.Tensor:
+        query = self.query_weight_coarse(coarse_image_embedding)
+        key = self.key_weight_coarse(coarse_image_embedding)
+        value = self.value_weight_coarse(coarse_image_embedding)  
+        
+        B, C, H, W = query.shape
+        
+        query = query.permute(0,2,3,1).reshape(B,-1, self.key_dimension)
+        key = key.permute(0,2,3,1).reshape(B,-1, self.key_dimension)
+        value = value.permute(0,2,3,1).reshape(B,-1, self.value_dimension)
+        
+        scores = torch.matmul(query,key.transpose(1,2)) / math.sqrt(self.key_dimension)
+        weights = self.softmax(scores)
+        return torch.matmul(weights,value).reshape(B,-1)
+        
+
+    def self_attention_granular_image_embedding(self,granular_image_embedding:torch.Tensor)->torch.Tensor:        
+        # Implement self attention for  granular images
+        
+        query = self.query_weight_granular(granular_image_embedding)
+        key = self.key_weight_granular(granular_image_embedding)
+        value = self.value_weight_granular(granular_image_embedding)  
+        
+        B, C, H, W = query.shape
+        
+        query = query.permute(0,2,3,1).reshape(B,-1, self.key_dimension)
+        key = key.permute(0,2,3,1).reshape(B,-1, self.key_dimension)
+        value = value.permute(0,2,3,1).reshape(B,-1, self.value_dimension)
+        
+        scores = torch.matmul(query,key.transpose(1,2)) / math.sqrt(self.key_dimension)
+        weights = self.softmax(scores)
+        return torch.matmul(weights,value).reshape(B,-1)
     
+    def self_attention_parameters(self,parameter_embedding:torch.Tensor)->torch.Tensor:
+        # project parametric embedding into B N 1
+        parameter_embedding = torch.unsqueeze(parameter_embedding,dim=-1)
+        key = self.key_weight_param(parameter_embedding)
+        value = self.value_weight_param(parameter_embedding)
+        query = self.query_weight_param(parameter_embedding)
+        B = query.shape[0]
+        
+        scores = torch.matmul(query,key.transpose(1,2)) / math.sqrt(self.param_key_dimension)
+        weights = self.softmax(scores)
+        print(weights.shape)
+        print(value.shape)
+        
+        return torch.matmul(weights,value).reshape(B,-1)
+
+    def cross_attention_coarse_granular(self,granular_image_embedding:torch.Tensor,coarse_image_embedding:torch.Tensor,flatten=True)->torch.Tensor:
+        query = self.query_weight(granular_image_embedding)
+        key = self.key_weight(coarse_image_embedding)
+        value = self.value_weight(coarse_image_embedding)  
+        
+        B, C, H, W = query.shape
+        
+        query = query.permute(0,2,3,1).reshape(B,-1, self.key_dimension) # B 9 10
+        key = key.permute(0,2,3,1).reshape(B,-1, self.key_dimension) # B 4 10
+        value = value.permute(0,2,3,1).reshape(B,-1, self.value_dimension) # B 4 60
+        
+        scores = torch.matmul(query,key.transpose(1,2)) / math.sqrt(self.key_dimension) # B 9 4
+        weights = self.softmax(scores) # B 9 4
+        
+        if flatten:
+            return torch.matmul(weights,value).reshape(B,-1) # B 540
+        else:
+            return torch.matmul(weights,value) # B 9 60
+    
+    def cross_attention_images_parameter(self,images_embedding:torch.Tensor,parametric_embedding:torch.Tensor,flatten=True)->torch.Tensor:
+        
+        # project parametric embedding into B N 1
+        parametric_embedding = torch.unsqueeze(parametric_embedding,dim=-1)
+        key = self.key_weight_param(parametric_embedding)
+        value = self.value_weight_param(parametric_embedding)
+        
+        query = self.query_weight_image(images_embedding)
+        B, L, D = query.shape
+        
+        scores = torch.matmul(query,key.transpose(1,2)) / math.sqrt(self.key_dimension) # B 9 4
+        weights = self.softmax(scores) # B 9 4
+
+        if flatten:
+            return torch.matmul(weights,value).reshape(B,-1) # B 890
+        else:
+            return torch.matmul(weights,value) # B 9 90
+        
         
     def forward(self,coarse_input:torch.FloatTensor,granular_input:torch.FloatTensor,parametric_input:torch.FloatTensor):
         coarse_image_embedding = self.coarse_module(coarse_input)
@@ -632,18 +734,21 @@ class MultimodalFullModel(nn.Module):
         parametric_embeddings = self.parametric_module(parametric_input)
         parametric_embeddings = self.relu(parametric_embeddings)
         
+        # image_embeddings = self.cross_attention_coarse_granular(granular_image_embedding,coarse_image_embedding,flatten=False)
+        # combination = self.cross_attention_images_parameter(images_embedding=image_embeddings,parametric_embedding=parametric_embeddings,flatten=True)
         
-        # Implement cross attention between images
-        query = self.query_weight_coarse_image(coarse_image_embedding)
-        key = self.key_weight_granular_image(granular_image_embedding)
-        value = self.value_weight_granular_image(granular_image_embedding)
+        # query_key_output = self.softmax(torch.mm(input=query,mat2=key.T) / math.sqrt(self.key_dimension))
+        # output = torch.mm(query_key_output,value)
         
-        query_key_output = self.softmax(torch.mm(input=query,mat2=key.T) / math.sqrt(self.key_dimension))
-        image_attention_output = torch.mm(query_key_output,value)
+        coarse_image_embedding = self.self_attention_coarse_image_embedding(coarse_image_embedding)
+        granular_image_embedding = self.self_attention_granular_image_embedding(granular_image_embedding)
+        parametric_embeddings = self.self_attention_parameters(parametric_embeddings)
         
+        print(coarse_image_embedding.shape,granular_image_embedding.shape,parametric_embeddings.shape)
         
-        combination = torch.cat(tensors=(image_attention_output,parametric_embeddings),dim=1)
-        combination = self.dropout(combination)
+        combination = torch.cat(tensors=(coarse_image_embedding,granular_image_embedding,parametric_embeddings),dim=1)
+        
+        # combination = self.dropout(combination)
         
         output = self.fc1(combination)
         output = self.relu(output)
@@ -741,7 +846,7 @@ class ModelTrainer():
         else:
             coarse_image_path = "/kaggle/input/coe-cnn-Experiment/coarse images"
             granular_image_path = "/kaggle/input/coe-cnn-Experiment/granular_images"
-            excel_path = "/kaggle/input/coe-cnn-Experiment/Set2_version_3.csv"
+            excel_path = "/kaggle/input/coe-cnn-Experiment/Set2.csv"
         
         granular_model_training_locations = {
             '256' : "/kaggle/input/coe-cnn-Experiment/all_high_res",
@@ -829,7 +934,7 @@ class ModelTrainer():
         Then return the output as a nd.ndarray 
         """
         transform = ColumnTransformer(transformers=[
-            ('Standard Scale',StandardScaler(),['Lat','Long','Speed','Lanes','Population2021','PopPerSqKm2021','Out_of_range']),
+            ('Standard Scale',StandardScaler(),['Lat','Long','Speed','Lanes','Population2021','PopPerSqKm2021']),
         ],remainder='passthrough')
         
         return transform.fit_transform(df).astype(np.float32)
@@ -855,7 +960,7 @@ class ModelTrainer():
         shuffle_index = pd.Series(np.random.permutation(df.shape[0]))
         df = df.iloc[shuffle_index]
         ordering = df['Estimation_point'].tolist()
-        df = df[['Lat','Long','Collector','Local','Major Arterial','Minor Arterial','Speed','Lanes','Population2021','PopPerSqKm2021','Out_of_range']]
+        df = df[['Lat','Long','Collector','Local','Major Arterial','Minor Arterial','Speed','Lanes','Population2021','PopPerSqKm2021']]
         
         return ordering, df
 
