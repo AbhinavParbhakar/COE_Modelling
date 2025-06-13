@@ -17,16 +17,25 @@ import sys
 import datetime
 import math
 
-# Check if running on Kaggle and install dependencies if not already installed
-if "KAGGLE_KERNEL_RUN_TYPE" in os.environ:
-    print("Started download for pip packages")
-    import torch
-    version = torch.__version__.split("+")[0]  # Extracts version without CUDA/CPU suffix
-    install_cmd = [
-        sys.executable, "-m", "pip", "install", "bayesian-optimization"]
-    subprocess.check_call(install_cmd)
+# Check if running on Kaggle and install dependencies if not already installed   
+print("Started download for pytorch_geometric")
+import torch
+version = torch.__version__.split("+")[0]  # Extracts version without CUDA/CPU suffix
+install_cmd = [
+    sys.executable, "-m", "pip", "install", "geopandas",
+    "torch_geometric", "bayesian-optimization",
+    "-f", f"https://data.pyg.org/whl/torch-{version}+cu121.html"
+]
+subprocess.check_call(install_cmd)
 
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 from bayes_opt import BayesianOptimization
+from torch.utils.checkpoint import checkpoint
+from torch_geometric.nn.conv import GCNConv
+from torch_geometric.data import Data
+from torch_geometric.data import Batch
+from torch_geometric.utils import k_hop_subgraph
 
 seed = 42
 np.random.seed(seed)
@@ -38,7 +47,7 @@ class NN(nn.Module):
     def __init__(self):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(10,64),
+            nn.Linear(8,64),
             nn.BatchNorm1d(64),
             nn.ReLU(),
             
@@ -148,7 +157,7 @@ class CoarseImageModel(nn.Module):
         x1 = x1 + x1_layer_5_input
         x1 = self.avg_pool(x1)
         
-        return x1
+        return self.flatten(x1)
 
 class ThirtyTwoGranularImageModel(nn.Module):
     def __init__(self,):
@@ -575,7 +584,7 @@ class TwoFiftySixGranularImageModel(nn.Module):
         x2 = x2 + x2_layer_5_input
         x2 = self.avg_pool(x2)
         
-        return x2
+        return self.flatten(x2)
    
 class MultimodalFullModel(nn.Module):
     def __init__(self,granular_image_dimension=256):
@@ -618,7 +627,7 @@ class MultimodalFullModel(nn.Module):
         self.coarse_module = CoarseImageModel()
         self.granular_module = granular_model_dict[granular_image_dimension]
         # self.aerial_module = granular_model_dict[256]
-        self.fc1 = nn.Linear(in_features=1292,out_features=500)
+        self.fc1 = nn.Linear(in_features=combination_size,out_features=500)
         self.fc2 = nn.Linear(in_features=500,out_features=200)
         self.fc3 = nn.Linear(in_features=200,out_features=50)
         self.fc4 = nn.Linear(in_features=50,out_features=1)
@@ -740,100 +749,108 @@ class MultimodalFullModel(nn.Module):
         # query_key_output = self.softmax(torch.mm(input=query,mat2=key.T) / math.sqrt(self.key_dimension))
         # output = torch.mm(query_key_output,value)
         
-        coarse_image_embedding = self.self_attention_coarse_image_embedding(coarse_image_embedding)
-        granular_image_embedding = self.self_attention_granular_image_embedding(granular_image_embedding)
-        parametric_embeddings = self.self_attention_parameters(parametric_embeddings)
-        
-        print(coarse_image_embedding.shape,granular_image_embedding.shape,parametric_embeddings.shape)
-        
+        # coarse_image_embedding = self.self_attention_coarse_image_embedding(coarse_image_embedding)
+        # granular_image_embedding = self.self_attention_granular_image_embedding(granular_image_embedding)
+        # parametric_embeddings = self.self_attention_parameters(parametric_embeddings)
+                
         combination = torch.cat(tensors=(coarse_image_embedding,granular_image_embedding,parametric_embeddings),dim=1)
         
         # combination = self.dropout(combination)
         
-        output = self.fc1(combination)
-        output = self.relu(output)
-        output = self.dropout(output)
-        output = self.fc2(output)
-        output = self.relu(output)
-        output = self.fc3(output)
-        output = self.relu(output)
-        output = self.fc4(output)
+        # output = self.fc1(combination)
+        # output = self.relu(output)
+        # output = self.dropout(output)
+        # output = self.fc2(output)
+        # output = self.relu(output)
+        # output = self.fc3(output)
+        # output = self.relu(output)
+        # output = self.fc4(output)
         
-        return output
+        return combination
     
-class ImageDataset(Dataset):
-    def __init__(self,coarse_images:np.ndarray,granular_images:np.ndarray,targets:np.ndarray,train=False):        
-        if train:
-            # Training data augmented
-            self.coarse_images = self.generate_tensor_from_numpy(coarse_images,train=train)
-            self.granular_images = self.generate_tensor_from_numpy(granular_images,train=train)
-            self.y = torch.from_numpy(targets.repeat(4,axis=0)).float()
-        else:
-            self.coarse_images = torch.from_numpy(coarse_images).permute(0,3,1,2) / 255
-            self.granular_images = torch.from_numpy(granular_images).permute(0,3,1,2) / 255
-            self.y = torch.from_numpy(targets).float()
+class MM_GNN(nn.Module):
+    def __init__(self, adj_matrix:Data,granular_image_size=256):
+        super().__init__()
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        adj_matrix = adj_matrix.to(device)
+        self.edge_index = adj_matrix.edge_index
+        self.edge_weight = adj_matrix.edge_weight
+        self.multi_modal_module = MultimodalFullModel(granular_image_dimension=granular_image_size)
+        self.bn1 = nn.BatchNorm1d(num_features=500)
+        self.bn2 = nn.BatchNorm1d(num_features=250)
+        self.bn3 = nn.BatchNorm1d(num_features=128)
+        self.gcn1 = GCNConv(in_channels=-1,out_channels=500,)
+        self.gcn2 = GCNConv(in_channels=500,out_channels=250,)
+        self.gcn3 = GCNConv(in_channels=250,out_channels=128)
+        self.gcn4 = GCNConv(in_channels=128,out_channels=32,)
+        self.gcn5 = GCNConv(in_channels=32,out_channels=1,)
+        self.dropout = nn.Dropout()
+        self.relu = nn.ReLU()
+    def generate_batches(self,data:list,batch_size:int,shuffle=False)->list[list]:
+        """
+        Given the data as a one-dimensional ist and the batch size, generate batches of the data and return it
+        """
+        prev_index = 0
+        next_index = 0
+        batches = []
         
-    def generate_tensor_from_numpy(self,array:np.ndarray,train=False)->torch.FloatTensor:
-        images = []
-        for image in array:
-            images.append(ToTensor()(image).unsqueeze(dim=0))
-            if train:
-                # Generate augmented rotations at intervals of 90 degrees
-                image1 = rotate(img=ToTensor()(image),angle=90).unsqueeze(dim=0)
-                image2 = rotate(img=ToTensor()(image),angle=180).unsqueeze(dim=0)
-                image3 = rotate(img=ToTensor()(image),angle=270).unsqueeze(dim=0)
-                images.extend([image1,image2,image3])
+        if shuffle:
+            data = np.random.permutation(data).tolist()
         
-        return torch.cat(images,dim=0)
+        while prev_index < len(data):
+            next_index = min(len(data),prev_index + batch_size)
+            batch = data[prev_index:next_index]
+            batches.append(batch)
+            prev_index = next_index
+        
+        return batches
+
+    def mm_checkpoint(self,coarse_images,granular_images,params):
+        return self.multi_modal_module(coarse_images,granular_images,params)
+    
+    def forward(self,coarse_images,granular_images,params,device,graph,center_ids):
+        x = self.gcn1(x=x,edge_index=self.edge_index,edge_weight=self.edge_weight,)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.gcn2(x=x,edge_index=self.edge_index,edge_weight=self.edge_weight)
+        x = self.bn2(x)
+        x = self.relu(x)
+        x = self.gcn3(x=x,edge_index=self.edge_index,edge_weight=self.edge_weight)
+        x = self.bn3(x)
+        x = self.relu(x)
+        x = self.gcn4(x=x,edge_index=self.edge_index,edge_weight=self.edge_weight)
+        x = self.relu(x)
+        x = self.gcn5(x,edge_index=self.edge_index,edge_weight=self.edge_weight)
+        
+        return x
+
+
+class FullDataset(Dataset):
+    def __init__(self,coarse_images:torch.Tensor,granular_images:torch.Tensor,params:torch.Tensor,target:torch.Tensor,indices:list,huge_graph:Data):
+        self.coarse_images = coarse_images[indices]
+        self.granular_images = granular_images[indices]
+        self.params = params[indices]
+        self.target = target[indices]
+        self.indices = indices
+        self.shape = self.params.shape
+        self.subgraphs = [self.get_node_subgraph(node_idx=idx,num_hops=3,data=huge_graph) for idx in indices]
+        self.center_ids = [graph.center_id for graph in self.subgraphs]
+    
+    def __getitem__(self, index):
+        return self.coarse_images[index],self.granular_images[index],self.params[index],self.target[index], Batch.from_data_list(self.subgraphs[index]),self.center_ids[index]
     
     def __len__(self):
         return self.coarse_images.shape[0]
-
-    def __getitem__(self, index):
-        return self.coarse_images[index], self.granular_images[index], self.y[index]
+    
+    def get_node_subgraph(self, node_idx, num_hops, data):
+        subset, edge_index, mapping, edge_mask = k_hop_subgraph(
+            node_idx, num_hops, data.edge_index, relabel_nodes=True)
+        x = data.x[subset]
+        y = data.y[node_idx].unsqueeze(0)  # label for center node
+        return Data(x=x, edge_index=edge_index, y=y, center_id=mapping.squeeze(0),)
     
 
-# def grid_search(lr_ranges:list[int],batch_size_ranges:list[int],regularization_ranges:list[int],train_dataset:Dataset,test_dataset:Dataset,annealing_rates:list[float],annealing_ranges:list[int]):
-#     """
-#     Apply grid search over the provided metrics, save the model and print grid search results.
-#     """
-#     epochs = 200
-#     model = MultimodalFullModel()
-#     best_r2 = -5
-#     best_annealing_rate = 0
-#     best_annealing_range = 0
-#     saved_model = None
-#     final_save_name = ''
-#     best_batch_size = 0
-#     best_lr = 0
-#     best_l2 = 0
-        
-#     for lr in lr_ranges:
-#         for batch_size in batch_size_ranges:
-#             for l2_decay in regularization_ranges:
-#                 for annealing_rate in annealing_rates:
-#                     for annealing_range in annealing_ranges:
-#                         r2, best_model, save_name = train(model=model,epochs=epochs,lr=lr,batch_size=batch_size,decay=l2_decay,train_data=train_dataset,test_data=test_dataset,annealing_range=annealing_range,annealing_rate=lr/annealing_rate)
-#                         if r2 > best_r2:
-#                             best_r2 = r2
-#                             saved_model = best_model
-#                             final_save_name = save_name
-#                             best_lr = lr
-#                             best_l2 = l2_decay
-#                             best_batch_size = batch_size
-#                             best_annealing_rate = annealing_rate
-#                             best_annealing_range = annealing_range
-                    
-#     with open('search_results','w') as file:
-#         file.write(f'Best R2 Score: {best_r2}\n')
-#         file.write(f'Best LR: {best_lr}\n')
-#         file.write(f'Best Batch Size: {best_batch_size}\n')
-#         file.write(f'Best L2 decay: {best_l2}\n')
-#         file.write(f'Best annealing rate: {best_lr/best_annealing_rate}')
-#         file.write(f'Best ')
-        
-#     torch.save(saved_model,final_save_name)
-    
+
 class ModelTrainer():
     def __init__(self,print_graphs:bool,training_split:float,granular_model_size="256",coarse_model_size="16",save_model=False):
         os_name = os.name
@@ -849,7 +866,7 @@ class ModelTrainer():
             excel_path = "/kaggle/input/coe-cnn-Experiment/Set2.csv"
         
         granular_model_training_locations = {
-            '256' : "/kaggle/input/coe-cnn-Experiment/all_high_res",
+            '256' : "/kaggle/input/coe-cnn-Experiment/final_dataset_aerial",
             '512' : "/kaggle/input/coe-cnn-Experiment/512x512-granular-images",
             '128' : "/kaggle/input/coe-cnn-Experiment/128x128-granular-images",
             '64' : "/kaggle/input/coe-cnn-Experiment/64x64-granular-images",
@@ -859,7 +876,7 @@ class ModelTrainer():
         coarse_model_training_locations = {
             '32' : "/kaggle/input/coe-cnn-Experiment/32x32-coarse-images",
             '16' : "/kaggle/input/coe-cnn-Experiment/16x16-coarse_IQR",
-            '8' : "/kaggle/input/coe-cnn-Experiment/8x8-coarse-images",
+            '8' : "/kaggle/input/coe-cnn-Experiment/coarse_all_images_8x8",
             '4' : "/kaggle/input/coe-cnn-Experiment/4x4-coarse-images",
             '2' : "/kaggle/input/coe-cnn-Experiment/2x2-coarse-images"
         }
@@ -872,12 +889,14 @@ class ModelTrainer():
         if coarse_model_size not in coarse_model_training_locations:
             raise Exception(f"Coarse Model must match {list(coarse_model_training_locations.keys())}")
         
+        adj_matrix_path = "/kaggle/input/coe-cnn-Experiment/Adjacency matrix3.csv"
         granular_image_path = granular_model_training_locations[granular_model_size]
         coarse_image_path = coarse_model_training_locations[coarse_model_size]
         self.print_graphs = print_graphs
         self.save_model = save_model
         
         # Load data
+        self.adj_matrix = self.get_adjacency_matrix(adj_matrix_path)
         orderings, parametric_features_df = self.get_parametric_features(excel_path)
         self.excel_path = excel_path
         granular_images_ndarray = self.convert_images_to_numpy(image_path=granular_image_path, ordering=orderings)
@@ -894,38 +913,37 @@ class ModelTrainer():
         self.coarse_images_ndarray = coarse_images_ndarray
         self.aawdt_ndarray = aawdt_ndarray
         
-        # Split data
-        training_split_index = int(granular_images_ndarray.shape[0] * training_split)
-        
-        param_train_df = parametric_features_df[:training_split_index]
-        param_test_df = parametric_features_df[training_split_index:]
-        
-        param_train = self.preprocess_data(param_train_df)
-        param_test = self.preprocess_data(param_test_df)
-        granular_train, coarse_train,  = granular_images_ndarray[:training_split_index],coarse_images_ndarray[:training_split_index],
-         
-        granular_test, coarse_test, = granular_images_ndarray[training_split_index:],coarse_images_ndarray[training_split_index:],
-        
-        # aerial_train, aerial_test = aerial_images_ndarray[:training_split_index],aerial_images_ndarray[training_split_index:]
-        
-        aawdt_train, aawdt_test = aawdt_ndarray[:training_split_index],aawdt_ndarray[training_split_index:]
 
+    def get_adjacency_matrix(self,path:str)->Data:
+        """
+        Given the path listed, return a Data object with the provided edge weights and indices and mock data
+        """
+        df = pd.read_csv(path)
+        print(df.shape)
+        num_rows, num_cols = df.shape
+        origins = []
+        destinations = []
+        weights = []
+        for i in range(num_rows):
+            for j in range(num_cols):
+                distance = df.iloc[i,j]
+                if i != j and not np.isinf(distance):
+                    origins.append(i)
+                    destinations.append(j)
+                    if distance == 0.0:
+                        weights.append(1)
+                    else:
+                        weights.append(1/distance)
+                    
         
-        self.train_dataset = TensorDataset(
-            torch.from_numpy(coarse_train).permute(0,3,1,2) / 255,
-            torch.from_numpy(granular_train).permute(0,3,1,2) / 255,
-            # torch.from_numpy(aerial_train).permute(0,3,1,2) / 255,
-            torch.from_numpy(param_train),
-            torch.from_numpy(aawdt_train)
-            )
-        self.test_dataset = TensorDataset(
-            torch.from_numpy(coarse_test).permute(0,3,1,2) / 255,
-            torch.from_numpy(granular_test).permute(0,3,1,2) / 255,
-            # torch.from_numpy(aerial_test).permute(0,3,1,2) / 255,
-            torch.from_numpy(param_test),
-            torch.from_numpy(aawdt_test)
-            )
-
+        edge_index = torch.tensor([origins,destinations],dtype=torch.long)
+        edge_weights = torch.tensor(weights,dtype=torch.float32)
+        mock_data = torch.rand(size=(num_rows,1))
+        
+        data = Data(x=mock_data,edge_index=edge_index,edge_weights=edge_weights)
+        
+        return data
+        
     def preprocess_data(self,df:pd.DataFrame)->np.ndarray:
         """
         Using the given data frame containing the information for studies, apply StandardScaling for 
@@ -934,7 +952,7 @@ class ModelTrainer():
         Then return the output as a nd.ndarray 
         """
         transform = ColumnTransformer(transformers=[
-            ('Standard Scale',StandardScaler(),['Lat','Long','Speed','Lanes','Population2021','PopPerSqKm2021']),
+            ('Standard Scale',StandardScaler(),['Lat','Long','Speed','Lanes']),
         ],remainder='passthrough')
         
         return transform.fit_transform(df).astype(np.float32)
@@ -957,10 +975,8 @@ class ModelTrainer():
         """
         df = pd.read_csv(file_path)
         df[['Collector','Local','Major Arterial','Minor Arterial']] = pd.get_dummies(df['Road Class'],dtype=int)
-        shuffle_index = pd.Series(np.random.permutation(df.shape[0]))
-        df = df.iloc[shuffle_index]
         ordering = df['Estimation_point'].tolist()
-        df = df[['Lat','Long','Collector','Local','Major Arterial','Minor Arterial','Speed','Lanes','Population2021','PopPerSqKm2021']]
+        df = df[['Lat','Long','Collector','Local','Major Arterial','Minor Arterial','Speed','Lanes',]]
         
         return ordering, df
 
@@ -1018,9 +1034,9 @@ class ModelTrainer():
         """
         regression_values = []
         df = pd.read_csv(file_path)
-        for id in ordering:
-            regression_values.append(df['AAWDT'][df['Estimation_point'] == id].values[0])
-        targets = np.array(regression_values)
+        # for id in ordering:
+        #     regression_values.append(df['AAWDT'][df['Estimation_point'] == id].values[0])
+        targets = df['AAWDT'].to_numpy()
         targets = targets.reshape((-1,1))
         return targets.astype(np.float32)
 
@@ -1106,9 +1122,13 @@ class ModelTrainer():
             num_fold : ``int``
                 The number of folds to use during Cross Validation 
         """
-        num_samples = self.parametric_features_df.shape[0]
+        # non_zero_indices = np.where(self.aawdt_ndarray == 0.0)[0].tolist()
+        non_zero_indices = []
+        num_samples = self.parametric_features_df.shape[0] - len(non_zero_indices)
+        # start_index = non_zero_indices[len(non_zero_indices) - 1] + 1
+        start_index = 0
         fold_breaks = math.ceil(num_samples / num_fold)
-        fold_indices = [min(i * fold_breaks,num_samples) for i in range(num_fold + 1)]
+        fold_indices = [min(i * fold_breaks,num_samples) + start_index for i in range(num_fold + 1)]
         fold_subsets = []
         avg_score = 0
         dataframes = []
@@ -1117,43 +1137,42 @@ class ModelTrainer():
         while i <= len(fold_indices):
             if i != len(fold_indices):
                 val_indices = [i for i in range(fold_indices[i-1],fold_indices[i])]
-                training_indices = [i for i in range(0,fold_indices[i-1])]
-                training_indices.extend([i for i in range(fold_indices[i],num_samples)])
+                training_indices = [i for i in range(start_index,fold_indices[i-1])]
+                training_indices.extend([i for i in range(fold_indices[i],num_samples + start_index)])
                 fold_subsets.append((training_indices,val_indices))
             i += 1
         
         fold = 1
         for training_indices, val_indices in fold_subsets:
-            param_train_df = self.parametric_features_df.iloc[training_indices]
-            param_test_df = self.parametric_features_df.iloc[val_indices]
+            preprocessed_params = np.zeros(shape=(self.parametric_features_df.shape[0],8)).astype(np.float32)
             
+            param_train_df = self.parametric_features_df.iloc[non_zero_indices + training_indices]
+            param_test_df = self.parametric_features_df.iloc[val_indices]
             param_train = self.preprocess_data(param_train_df)
             param_test = self.preprocess_data(param_test_df)
-            granular_train, coarse_train,  = self.granular_images_ndarray[training_indices],self.coarse_images_ndarray[training_indices],
             
-            granular_test, coarse_test = self.granular_images_ndarray[val_indices],self.coarse_images_ndarray[val_indices],
+            preprocessed_params[non_zero_indices + training_indices] = param_train
+            preprocessed_params[val_indices] = param_test
             
-            aawdt_train, aawdt_test = self.aawdt_ndarray[training_indices],self.aawdt_ndarray[val_indices]
+            train_dataset = FullDataset(
+                coarse_images= torch.from_numpy(self.coarse_images_ndarray).permute(0,3,1,2) / 255,
+                granular_images= torch.from_numpy(self.granular_images_ndarray).permute(0,3,1,2) / 255,
+                params= torch.from_numpy(preprocessed_params),
+                target= torch.from_numpy(self.aawdt_ndarray),
+                indices=training_indices,
+                huge_graph=self.adj_matrix
+            )
             
-            # aerial_train, aerial_test = self.aerial_images_ndarray[training_indices],self.aerial_images_ndarray[val_indices]
-
+            test_dataset = FullDataset(
+                coarse_images= torch.from_numpy(self.coarse_images_ndarray).permute(0,3,1,2) / 255,
+                granular_images= torch.from_numpy(self.granular_images_ndarray).permute(0,3,1,2) / 255,
+                params= torch.from_numpy(preprocessed_params),
+                target= torch.from_numpy(self.aawdt_ndarray),
+                indices=val_indices,
+                huge_graph=self.adj_matrix
+            )
             
-            self.train_dataset = TensorDataset(
-                torch.from_numpy(coarse_train).permute(0,3,1,2) / 255,
-                torch.from_numpy(granular_train).permute(0,3,1,2) / 255,
-                # torch.from_numpy(aerial_train).permute(0,3,1,2) / 255,
-                torch.from_numpy(param_train),
-                torch.from_numpy(aawdt_train)
-                )
-            self.test_dataset = TensorDataset(
-                torch.from_numpy(coarse_test).permute(0,3,1,2) / 255,
-                torch.from_numpy(granular_test).permute(0,3,1,2) / 255,
-                # torch.from_numpy(aerial_test).permute(0,3,1,2) / 255,
-                torch.from_numpy(param_test),
-                torch.from_numpy(aawdt_test)
-                )
-            
-            metric = self.train_model(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_rate=annealing_rate,annealing_range=annealing_range)
+            metric = self.train_model(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_rate=annealing_rate,annealing_range=annealing_range,test_dataset=test_dataset,train_dataset=train_dataset)
             print(f'Metric for fold {fold}: {metric}')
             results = self.get_training_featues_with_predictions()
             dataframes.append(results)
@@ -1167,11 +1186,12 @@ class ModelTrainer():
             
         
     
-    def train_model(self,epochs: int, lr: float, batch_size: int, decay: float,annealing_rate=0.0001,annealing_range=30):
-        self.model = MultimodalFullModel(int(self.granular_model_size))
-        best_r2,save_name,model_copy,best_preds,best_targets = self.train(model=self.model,epochs=int(epochs),lr=lr,batch_size=int(batch_size),decay=decay,annealing_range=int(annealing_range),annealing_rate=annealing_rate,train_data=self.train_dataset,test_data=self.test_dataset,create_graphs=self.print_graphs)
+    def train_model(self,epochs: int, lr: float, batch_size: int, decay: float, train_dataset:Dataset, test_dataset:Dataset,annealing_rate=0.0001,annealing_range=30,):
+        self.model = MM_GNN(granular_image_size=int(self.granular_model_size),adj_matrix=self.adj_matrix)
+        best_r2,save_name,model_copy,best_preds,best_targets,indices = self.train(model=self.model,epochs=int(epochs),lr=lr,batch_size=int(batch_size),decay=decay,annealing_range=int(annealing_range),annealing_rate=annealing_rate,train_data=dataset,test_data=None,create_graphs=self.print_graphs)
         self.best_preds = best_preds
         self.best_targets = best_targets
+        self.indices = indices
         if self.save_model:
             torch.save(model_copy,save_name)
         
@@ -1179,15 +1199,33 @@ class ModelTrainer():
     
     def get_training_featues_with_predictions(self)->pd.DataFrame:
         df = pd.read_csv(self.excel_path)
-        column_names = ['AAWDT','Pred. AAWDT']
-        prediction_df = pd.DataFrame(data=np.concatenate((self.best_targets,self.best_preds),axis=1),columns=column_names)
+        column_names = ['Pred. AAWDT']
+        prediction_df = pd.DataFrame(data=self.best_preds,columns=column_names,index=self.indices)
         df['AAWDT'] =  df['AAWDT'].astype(int)
-        prediction_df['AAWDT'] = prediction_df['AAWDT'].astype(int)
-        result_df = df.merge(prediction_df,on='AAWDT')
+        result_df = df.join(prediction_df)
         return result_df
-        
     
-    def train(self,model:nn.Module,epochs: int, lr: float, batch_size: int, decay: float, train_data:Dataset, test_data:Dataset,create_graphs=False,annealing_rate=0.0001,annealing_range=30)->tuple:
+    
+    def generate_batches(self,data:list,batch_size:int,shuffle=False)->list[list]:
+        """
+        Given the data as a one-dimensional ist and the batch size, generate batches of the data and return it
+        """
+        prev_index = 0
+        next_index = 0
+        batches = []
+        
+        if shuffle:
+            data = np.random.permutation(data).tolist()
+        
+        while prev_index < len(data):
+            next_index = min(len(data),prev_index + batch_size)
+            batch = data[prev_index:next_index]
+            batches.append(batch)
+            prev_index = next_index
+        
+        return batches
+    
+    def train(self,model:nn.Module,epochs: int, lr: float, batch_size: int, decay: float, train_data:FullDataset, test_data:FullDataset,create_graphs=False,annealing_rate=0.0001,annealing_range=30)->tuple:
         """
         Parameters
         ----------
@@ -1215,8 +1253,10 @@ class ModelTrainer():
         loss_fn = torch.nn.functional.huber_loss
         optim = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=decay)
         scheduler = CosineAnnealingLR(optimizer=optim,T_max=annealing_range,eta_min=annealing_rate)
-        training_loader = DataLoader(dataset=train_data, batch_size=batch_size,shuffle=True,drop_last=True)
-        test_loader = DataLoader(dataset=test_data, batch_size=batch_size,shuffle=True)
+        
+        train_loader = DataLoader(train_data,batch_size=batch_size,shuffle=True)
+        valid_loader = DataLoader(valid_loader,batch_size=batch_size,shuffle=True)
+        
         train_r2_values = []
         valid_r2_values = []
         train_rmse_values = []
@@ -1238,16 +1278,17 @@ class ModelTrainer():
             while i < epochs and not early_stop:
                 model.train()
                 all_targets, all_preds = [], []
-
-                for coarse_input, granular_input, param_input, target in training_loader:
+                target = target.to(device)
+                for coarse_input,granular_input,param_input,target,graph,center_ids in train_loader:
+                    pred = model(coarse_input, granular_input,param_input,device,graph,center_ids)
+                    target = target.to(device)
                     optim.zero_grad()
-                    pred = model(coarse_input.to(device), granular_input.to(device),param_input.to(device))
-                    loss = loss_fn(pred, target.to(device))
+                    loss = loss_fn(pred, target)
                     loss.backward()
                     optim.step()
 
-                    all_targets.append(target.detach().cpu().numpy())
-                    all_preds.append(pred.detach().cpu().numpy())
+                all_targets.append(target.detach().cpu().numpy())
+                all_preds.append(pred.detach().cpu().numpy())
 
                 # Compute metrics after epoch
                 all_targets = np.concatenate(all_targets)
@@ -1269,10 +1310,11 @@ class ModelTrainer():
                 model.eval()
                 valid_targets, valid_preds = [], []
                 with torch.no_grad():
-                    for coarse_input, granular_input, param_input, target in test_loader:
-                        pred = model(coarse_input.to(device), granular_input.to(device),param_input.to(device))
-                        valid_targets.append(target.detach().cpu().numpy())
-                        valid_preds.append(pred.detach().cpu().numpy())
+                    for coarse_input,granular_input,param_input,target,graph,center_ids in valid_loader:
+                        pred = model(coarse_input, granular_input,param_input,device,graph,center_ids)
+                        target = target.to(device)
+                        valid_targets.append(pred.detach().cpu().numpy())
+                        valid_preds.append(target.detach().cpu().numpy())
 
                 valid_targets = np.concatenate(valid_targets)
                 valid_preds = np.concatenate(valid_preds)
@@ -1314,14 +1356,13 @@ class ModelTrainer():
             self.create_graph(epochs_values,[train_r2_values,valid_r2_values],"Multimodal R2Score","Epochs","R2Score")
             self.create_graph([i + 1 for i in range(best_targets.shape[0])],y_values=[best_targets.reshape(best_targets.shape[0]),best_preds.reshape(best_preds.shape[0])],title="Ground Truth",xlabel="Data Point",ylabel="AAWDT",ground_truth=True)
         save_name = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-        model_copy = MultimodalFullModel(int(self.granular_model_size)).to(device=device).load_state_dict(checkpoint['Saved Model'])
-        
-        return (best_mape,save_name,model_copy,best_preds,best_targets)
+        # model_copy = MultimodalFullModel(int(self.granular_model_size)).to(device=device).load_state_dict(checkpoint['Saved Model'])
+        model_copy = None
+        return (best_mape,save_name,model_copy,best_preds,best_targets,test_data.indices)
     
 
 if __name__ == "__main__":
 
-    
     lr_ranges = [0.005]
     batch_size_ranges = [8,16,24]
     regularization_ranges = [0.05]
@@ -1343,7 +1384,7 @@ if __name__ == "__main__":
     decay = 0.00002694
     epochs = 112
     lr = 0.0007166975503570836
-    
+
     coarse_param = ['32', '16', '8', '4', '2']
     granular_param = ['256', '512', '128', '64', '32']
 
@@ -1358,7 +1399,7 @@ if __name__ == "__main__":
     #     for granular in granular_param:
     #         save_data['Coarse Param'].append(coarse)
     #         save_data['Granular Param'].append(granular)
-    trainer = ModelTrainer(print_graphs=False,save_model=False,training_split=0.85,granular_model_size="256",coarse_model_size="16")
+    trainer = ModelTrainer(print_graphs=False,save_model=False,training_split=0.85,granular_model_size="256",coarse_model_size="8")
     score = trainer.kfold(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate,num_fold=10)
     print(score)
     # best_r2 = trainer.train_model(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate)
