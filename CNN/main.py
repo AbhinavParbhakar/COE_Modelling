@@ -38,7 +38,7 @@ class NN(nn.Module):
     def __init__(self):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(10,64),
+            nn.Linear(8,64),
             nn.BatchNorm1d(64),
             nn.ReLU(),
             
@@ -148,7 +148,7 @@ class CoarseImageModel(nn.Module):
         x1 = x1 + x1_layer_5_input
         x1 = self.avg_pool(x1)
         
-        return x1
+        return self.flatten(x1)
 
 class ThirtyTwoGranularImageModel(nn.Module):
     def __init__(self,):
@@ -575,7 +575,7 @@ class TwoFiftySixGranularImageModel(nn.Module):
         x2 = x2 + x2_layer_5_input
         x2 = self.avg_pool(x2)
         
-        return x2
+        return self.flatten(x2)
    
 class MultimodalFullModel(nn.Module):
     def __init__(self,granular_image_dimension=256):
@@ -618,7 +618,7 @@ class MultimodalFullModel(nn.Module):
         self.coarse_module = CoarseImageModel()
         self.granular_module = granular_model_dict[granular_image_dimension]
         # self.aerial_module = granular_model_dict[256]
-        self.fc1 = nn.Linear(in_features=1292,out_features=500)
+        self.fc1 = nn.Linear(in_features=1036,out_features=500)
         self.fc2 = nn.Linear(in_features=500,out_features=200)
         self.fc3 = nn.Linear(in_features=200,out_features=50)
         self.fc4 = nn.Linear(in_features=50,out_features=1)
@@ -740,11 +740,11 @@ class MultimodalFullModel(nn.Module):
         # query_key_output = self.softmax(torch.mm(input=query,mat2=key.T) / math.sqrt(self.key_dimension))
         # output = torch.mm(query_key_output,value)
         
-        coarse_image_embedding = self.self_attention_coarse_image_embedding(coarse_image_embedding)
-        granular_image_embedding = self.self_attention_granular_image_embedding(granular_image_embedding)
-        parametric_embeddings = self.self_attention_parameters(parametric_embeddings)
+        # coarse_image_embedding = self.self_attention_coarse_image_embedding(coarse_image_embedding)
+        # granular_image_embedding = self.self_attention_granular_image_embedding(granular_image_embedding)
+        # parametric_embeddings = self.self_attention_parameters(parametric_embeddings)
         
-        print(coarse_image_embedding.shape,granular_image_embedding.shape,parametric_embeddings.shape)
+        # print(coarse_image_embedding.shape,granular_image_embedding.shape,parametric_embeddings.shape)
         
         combination = torch.cat(tensors=(coarse_image_embedding,granular_image_embedding,parametric_embeddings),dim=1)
         
@@ -846,10 +846,10 @@ class ModelTrainer():
         else:
             coarse_image_path = "/kaggle/input/coe-cnn-Experiment/coarse images"
             granular_image_path = "/kaggle/input/coe-cnn-Experiment/granular_images"
-            excel_path = "/kaggle/input/coe-cnn-Experiment/Set2.csv"
+            excel_path = "/kaggle/input/coe-cnn-Experiment/Set2_version_4.csv"
         
         granular_model_training_locations = {
-            '256' : "/kaggle/input/coe-cnn-Experiment/all_high_res",
+            '256' : "/kaggle/input/coe-cnn-Experiment/set_2_aerial",
             '512' : "/kaggle/input/coe-cnn-Experiment/512x512-granular-images",
             '128' : "/kaggle/input/coe-cnn-Experiment/128x128-granular-images",
             '64' : "/kaggle/input/coe-cnn-Experiment/64x64-granular-images",
@@ -859,7 +859,7 @@ class ModelTrainer():
         coarse_model_training_locations = {
             '32' : "/kaggle/input/coe-cnn-Experiment/32x32-coarse-images",
             '16' : "/kaggle/input/coe-cnn-Experiment/16x16-coarse_IQR",
-            '8' : "/kaggle/input/coe-cnn-Experiment/8x8-coarse-images",
+            '8' : "/kaggle/input/coe-cnn-Experiment/coarse_all_images_8x8",
             '4' : "/kaggle/input/coe-cnn-Experiment/4x4-coarse-images",
             '2' : "/kaggle/input/coe-cnn-Experiment/2x2-coarse-images"
         }
@@ -893,6 +893,7 @@ class ModelTrainer():
         # self.aerial_images_ndarray = aerial_images_ndarray
         self.coarse_images_ndarray = coarse_images_ndarray
         self.aawdt_ndarray = aawdt_ndarray
+        self.ordering = orderings
         
         # Split data
         training_split_index = int(granular_images_ndarray.shape[0] * training_split)
@@ -934,7 +935,7 @@ class ModelTrainer():
         Then return the output as a nd.ndarray 
         """
         transform = ColumnTransformer(transformers=[
-            ('Standard Scale',StandardScaler(),['Lat','Long','Speed','Lanes','Population2021','PopPerSqKm2021']),
+            ('Standard Scale',StandardScaler(),['Lat','Long','Speed','Lanes']),
         ],remainder='passthrough')
         
         return transform.fit_transform(df).astype(np.float32)
@@ -960,7 +961,7 @@ class ModelTrainer():
         shuffle_index = pd.Series(np.random.permutation(df.shape[0]))
         df = df.iloc[shuffle_index]
         ordering = df['Estimation_point'].tolist()
-        df = df[['Lat','Long','Collector','Local','Major Arterial','Minor Arterial','Speed','Lanes','Population2021','PopPerSqKm2021']]
+        df = df[['Lat','Long','Collector','Local','Major Arterial','Minor Arterial','Speed','Lanes']]
         
         return ordering, df
 
@@ -1135,6 +1136,10 @@ class ModelTrainer():
             
             aawdt_train, aawdt_test = self.aawdt_ndarray[training_indices],self.aawdt_ndarray[val_indices]
             
+            ordering_numpy = np.array(self.ordering).astype(dtype=np.float32)
+            
+            indices_train, indices_test = ordering_numpy[training_indices], ordering_numpy[val_indices]
+            
             # aerial_train, aerial_test = self.aerial_images_ndarray[training_indices],self.aerial_images_ndarray[val_indices]
 
             
@@ -1143,14 +1148,16 @@ class ModelTrainer():
                 torch.from_numpy(granular_train).permute(0,3,1,2) / 255,
                 # torch.from_numpy(aerial_train).permute(0,3,1,2) / 255,
                 torch.from_numpy(param_train),
-                torch.from_numpy(aawdt_train)
+                torch.from_numpy(aawdt_train),
+                torch.from_numpy(indices_train)
                 )
             self.test_dataset = TensorDataset(
                 torch.from_numpy(coarse_test).permute(0,3,1,2) / 255,
                 torch.from_numpy(granular_test).permute(0,3,1,2) / 255,
                 # torch.from_numpy(aerial_test).permute(0,3,1,2) / 255,
                 torch.from_numpy(param_test),
-                torch.from_numpy(aawdt_test)
+                torch.from_numpy(aawdt_test),
+                torch.from_numpy(indices_test)
                 )
             
             metric = self.train_model(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_rate=annealing_rate,annealing_range=annealing_range)
@@ -1161,7 +1168,8 @@ class ModelTrainer():
             fold += 1
         
         final_result = pd.concat(objs=dataframes,axis=0,ignore_index=True)
-        final_result.to_excel(f'{num_fold}{save_name}.xlsx',index=False)
+        file_name = self.excel_path.split('/')[-1]
+        final_result.to_excel(f"{num_fold}{save_name}-{file_name.split('.')[0]}.xlsx",index=False)
         return avg_score / num_fold
             
             
@@ -1169,9 +1177,10 @@ class ModelTrainer():
     
     def train_model(self,epochs: int, lr: float, batch_size: int, decay: float,annealing_rate=0.0001,annealing_range=30):
         self.model = MultimodalFullModel(int(self.granular_model_size))
-        best_r2,save_name,model_copy,best_preds,best_targets = self.train(model=self.model,epochs=int(epochs),lr=lr,batch_size=int(batch_size),decay=decay,annealing_range=int(annealing_range),annealing_rate=annealing_rate,train_data=self.train_dataset,test_data=self.test_dataset,create_graphs=self.print_graphs)
+        best_r2,save_name,model_copy,best_preds,best_targets,best_ids = self.train(model=self.model,epochs=int(epochs),lr=lr,batch_size=int(batch_size),decay=decay,annealing_range=int(annealing_range),annealing_rate=annealing_rate,train_data=self.train_dataset,test_data=self.test_dataset,create_graphs=self.print_graphs)
         self.best_preds = best_preds
         self.best_targets = best_targets
+        self.best_ids = best_ids
         if self.save_model:
             torch.save(model_copy,save_name)
         
@@ -1179,11 +1188,12 @@ class ModelTrainer():
     
     def get_training_featues_with_predictions(self)->pd.DataFrame:
         df = pd.read_csv(self.excel_path)
-        column_names = ['AAWDT','Pred. AAWDT']
-        prediction_df = pd.DataFrame(data=np.concatenate((self.best_targets,self.best_preds),axis=1),columns=column_names)
-        df['AAWDT'] =  df['AAWDT'].astype(int)
-        prediction_df['AAWDT'] = prediction_df['AAWDT'].astype(int)
-        result_df = df.merge(prediction_df,on='AAWDT')
+        column_names = ['ID','Pred. AAWDT']
+        self.best_ids = self.best_ids.reshape((-1,1))
+        prediction_df = pd.DataFrame(data=np.concatenate((self.best_ids,self.best_preds),axis=1),columns=column_names)
+        prediction_df['ID'] = prediction_df['ID'].astype(dtype=int)
+        df['Estimation_point'] =  df['Estimation_point'].astype(int)
+        result_df = pd.merge(left=df,right=prediction_df,left_on="Estimation_point",right_on="ID")
         return result_df
         
     
@@ -1234,12 +1244,13 @@ class ModelTrainer():
         checkpoint = None
         best_preds = None
         best_targets = None
+        best_ids = None
         with open('training.txt', 'w') as file:
             while i < epochs and not early_stop:
                 model.train()
                 all_targets, all_preds = [], []
 
-                for coarse_input, granular_input, param_input, target in training_loader:
+                for coarse_input, granular_input, param_input, target,indices in training_loader:
                     optim.zero_grad()
                     pred = model(coarse_input.to(device), granular_input.to(device),param_input.to(device))
                     loss = loss_fn(pred, target.to(device))
@@ -1268,13 +1279,16 @@ class ModelTrainer():
 
                 model.eval()
                 valid_targets, valid_preds = [], []
+                valid_indices = []
                 with torch.no_grad():
-                    for coarse_input, granular_input, param_input, target in test_loader:
+                    for coarse_input, granular_input, param_input, target,indices in test_loader:
                         pred = model(coarse_input.to(device), granular_input.to(device),param_input.to(device))
                         valid_targets.append(target.detach().cpu().numpy())
                         valid_preds.append(pred.detach().cpu().numpy())
+                        valid_indices.append(indices.detach().cpu().numpy())
 
                 valid_targets = np.concatenate(valid_targets)
+                valid_estimation_ids = np.concatenate(valid_indices)
                 valid_preds = np.concatenate(valid_preds)
                 valid_loss = np.sqrt(mean_squared_error(valid_targets, valid_preds))
                 valid_r2 = r2_score(valid_targets, valid_preds)
@@ -1301,6 +1315,7 @@ class ModelTrainer():
                     best_preds = valid_preds
                     best_targets = valid_targets
                     early_stopping_index = 1
+                    best_ids = valid_estimation_ids
                 else:
                     early_stopping_index += 1
                 
@@ -1316,7 +1331,9 @@ class ModelTrainer():
         save_name = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
         model_copy = MultimodalFullModel(int(self.granular_model_size)).to(device=device).load_state_dict(checkpoint['Saved Model'])
         
-        return (best_mape,save_name,model_copy,best_preds,best_targets)
+        return (best_mape,save_name,model_copy,best_preds,best_targets, best_ids)
+    
+    # def generate_estimates(self,model:nn.Module,estimation_dataset)
     
 
 if __name__ == "__main__":
@@ -1358,7 +1375,7 @@ if __name__ == "__main__":
     #     for granular in granular_param:
     #         save_data['Coarse Param'].append(coarse)
     #         save_data['Granular Param'].append(granular)
-    trainer = ModelTrainer(print_graphs=False,save_model=False,training_split=0.85,granular_model_size="256",coarse_model_size="16")
+    trainer = ModelTrainer(print_graphs=False,save_model=False,training_split=0.85,granular_model_size="256",coarse_model_size="8")
     score = trainer.kfold(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate,num_fold=10)
     print(score)
     # best_r2 = trainer.train_model(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate)
