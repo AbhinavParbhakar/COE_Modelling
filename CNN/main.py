@@ -16,6 +16,7 @@ from sklearn.preprocessing import OneHotEncoder,StandardScaler
 import sys
 import datetime
 import math
+from copy import deepcopy
 
 # Check if running on Kaggle and install dependencies if not already installed
 if "KAGGLE_KERNEL_RUN_TYPE" in os.environ:
@@ -847,9 +848,10 @@ class ModelTrainer():
             coarse_image_path = "/kaggle/input/coe-cnn-Experiment/coarse images"
             granular_image_path = "/kaggle/input/coe-cnn-Experiment/granular_images"
             excel_path = "/kaggle/input/coe-cnn-Experiment/Set2_version_4.csv"
+            
         
         granular_model_training_locations = {
-            '256' : "/kaggle/input/coe-cnn-Experiment/set_2_aerial",
+            '256' : "/kaggle/input/coe-cnn-Experiment/Final_aerial_final",
             '512' : "/kaggle/input/coe-cnn-Experiment/512x512-granular-images",
             '128' : "/kaggle/input/coe-cnn-Experiment/128x128-granular-images",
             '64' : "/kaggle/input/coe-cnn-Experiment/64x64-granular-images",
@@ -865,6 +867,7 @@ class ModelTrainer():
         }
         
         # aerial_images_path = "/kaggle/input/coe-cnn-Experiment/high_res_granular"
+        
         
         if granular_model_size not in granular_model_training_locations:
             raise Exception(f"Granular Model must match {list(granular_model_training_locations.keys())}")
@@ -888,6 +891,9 @@ class ModelTrainer():
         
         # Attach variables to object
         self.granular_model_size = granular_model_size
+        self.granular_path = granular_image_path
+        self.coarse_path = coarse_image_path
+        self.estimation_point_path = "/kaggle/input/coe-cnn-Experiment/Estimation Points.csv"
         self.parametric_features_df = parametric_features_df
         self.granular_images_ndarray = granular_images_ndarray
         # self.aerial_images_ndarray = aerial_images_ndarray
@@ -895,36 +901,15 @@ class ModelTrainer():
         self.aawdt_ndarray = aawdt_ndarray
         self.ordering = orderings
         
-        # Split data
-        training_split_index = int(granular_images_ndarray.shape[0] * training_split)
-        
-        param_train_df = parametric_features_df[:training_split_index]
-        param_test_df = parametric_features_df[training_split_index:]
-        
-        param_train = self.preprocess_data(param_train_df)
-        param_test = self.preprocess_data(param_test_df)
-        granular_train, coarse_train,  = granular_images_ndarray[:training_split_index],coarse_images_ndarray[:training_split_index],
-         
-        granular_test, coarse_test, = granular_images_ndarray[training_split_index:],coarse_images_ndarray[training_split_index:],
-        
-        # aerial_train, aerial_test = aerial_images_ndarray[:training_split_index],aerial_images_ndarray[training_split_index:]
-        
-        aawdt_train, aawdt_test = aawdt_ndarray[:training_split_index],aawdt_ndarray[training_split_index:]
+        parameters = self.preprocess_data(parametric_features_df)
 
         
-        self.train_dataset = TensorDataset(
-            torch.from_numpy(coarse_train).permute(0,3,1,2) / 255,
-            torch.from_numpy(granular_train).permute(0,3,1,2) / 255,
+        self.full_dataset = TensorDataset(
+            torch.from_numpy(coarse_images_ndarray).permute(0,3,1,2) / 255,
+            torch.from_numpy(granular_images_ndarray).permute(0,3,1,2) / 255,
             # torch.from_numpy(aerial_train).permute(0,3,1,2) / 255,
-            torch.from_numpy(param_train),
-            torch.from_numpy(aawdt_train)
-            )
-        self.test_dataset = TensorDataset(
-            torch.from_numpy(coarse_test).permute(0,3,1,2) / 255,
-            torch.from_numpy(granular_test).permute(0,3,1,2) / 255,
-            # torch.from_numpy(aerial_test).permute(0,3,1,2) / 255,
-            torch.from_numpy(param_test),
-            torch.from_numpy(aawdt_test)
+            torch.from_numpy(parameters),
+            torch.from_numpy(aawdt_ndarray)
             )
 
     def preprocess_data(self,df:pd.DataFrame)->np.ndarray:
@@ -940,7 +925,7 @@ class ModelTrainer():
         
         return transform.fit_transform(df).astype(np.float32)
 
-    def get_parametric_features(self,file_path:str)->tuple[list,pd.DataFrame]:
+    def get_parametric_features(self,file_path:str,shuffle=True)->tuple[list,pd.DataFrame]:
         """
         Create a ``pandas.DataFrame`` containing features.
         
@@ -958,8 +943,9 @@ class ModelTrainer():
         """
         df = pd.read_csv(file_path)
         df[['Collector','Local','Major Arterial','Minor Arterial']] = pd.get_dummies(df['Road Class'],dtype=int)
-        shuffle_index = pd.Series(np.random.permutation(df.shape[0]))
-        df = df.iloc[shuffle_index]
+        if shuffle:
+            shuffle_index = pd.Series(np.random.permutation(df.shape[0]))
+            df = df.iloc[shuffle_index]
         ordering = df['Estimation_point'].tolist()
         df = df[['Lat','Long','Collector','Local','Major Arterial','Minor Arterial','Speed','Lanes']]
         
@@ -1226,7 +1212,7 @@ class ModelTrainer():
         optim = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=decay)
         scheduler = CosineAnnealingLR(optimizer=optim,T_max=annealing_range,eta_min=annealing_rate)
         training_loader = DataLoader(dataset=train_data, batch_size=batch_size,shuffle=True,drop_last=True)
-        test_loader = DataLoader(dataset=test_data, batch_size=batch_size,shuffle=True)
+        # test_loader = DataLoader(dataset=test_data, batch_size=batch_size,shuffle=True)
         train_r2_values = []
         valid_r2_values = []
         train_rmse_values = []
@@ -1250,7 +1236,7 @@ class ModelTrainer():
                 model.train()
                 all_targets, all_preds = [], []
 
-                for coarse_input, granular_input, param_input, target,indices in training_loader:
+                for coarse_input, granular_input, param_input, target in training_loader:
                     optim.zero_grad()
                     pred = model(coarse_input.to(device), granular_input.to(device),param_input.to(device))
                     loss = loss_fn(pred, target.to(device))
@@ -1277,45 +1263,44 @@ class ModelTrainer():
                 file.write(f'RMSE is {training_loss:.3f}\n')
                 file.write('---------------------------\n')
 
-                model.eval()
-                valid_targets, valid_preds = [], []
-                valid_indices = []
-                with torch.no_grad():
-                    for coarse_input, granular_input, param_input, target,indices in test_loader:
-                        pred = model(coarse_input.to(device), granular_input.to(device),param_input.to(device))
-                        valid_targets.append(target.detach().cpu().numpy())
-                        valid_preds.append(pred.detach().cpu().numpy())
-                        valid_indices.append(indices.detach().cpu().numpy())
+                # model.eval()
+                # valid_targets, valid_preds = [], []
+                # valid_indices = []
+                # with torch.no_grad():
+                #     for coarse_input, granular_input, param_input, target,indices in test_loader:
+                #         pred = model(coarse_input.to(device), granular_input.to(device),param_input.to(device))
+                #         valid_targets.append(target.detach().cpu().numpy())
+                #         valid_preds.append(pred.detach().cpu().numpy())
+                #         valid_indices.append(indices.detach().cpu().numpy())
 
-                valid_targets = np.concatenate(valid_targets)
-                valid_estimation_ids = np.concatenate(valid_indices)
-                valid_preds = np.concatenate(valid_preds)
-                valid_loss = np.sqrt(mean_squared_error(valid_targets, valid_preds))
-                valid_r2 = r2_score(valid_targets, valid_preds)
-                valid_mape = mean_absolute_percentage_error(valid_targets, valid_preds)
+                # valid_targets = np.concatenate(valid_targets)
+                # valid_estimation_ids = np.concatenate(valid_indices)
+                # valid_preds = np.concatenate(valid_preds)
+                # valid_loss = np.sqrt(mean_squared_error(valid_targets, valid_preds))
+                # valid_r2 = r2_score(valid_targets, valid_preds)
+                # valid_mape = mean_absolute_percentage_error(valid_targets, valid_preds)
                 
-                #scheduler.step(mean_squared_error(valid_targets, valid_preds))
-                valid_mape_values.append(valid_mape * 100)
-                valid_rmse_values.append(valid_loss)
-                valid_r2_values.append(valid_r2)
+                # #scheduler.step(mean_squared_error(valid_targets, valid_preds))
+                # valid_mape_values.append(valid_mape * 100)
+                # valid_rmse_values.append(valid_loss)
+                # valid_r2_values.append(valid_r2)
                 
                 scheduler.step()
                 
 
-                file.write(f'\n---------------------------\nValidation Epoch: {i}\n')
-                file.write(f'r2 score is {valid_r2:.3f}\n')
-                file.write(f'MAPE is {valid_mape * 100:.2f}%\n')
-                file.write(f'RMSE is {valid_loss:.3f}\n')
-                file.write('---------------------------\n')
+                # file.write(f'\n---------------------------\nValidation Epoch: {i}\n')
+                # file.write(f'r2 score is {valid_r2:.3f}\n')
+                # file.write(f'MAPE is {valid_mape * 100:.2f}%\n')
+                # file.write(f'RMSE is {valid_loss:.3f}\n')
+                # file.write('---------------------------\n')
                 
                 # Early Stopping Mechanism
-                if valid_mape < best_mape:
-                    best_mape = valid_mape
-                    checkpoint = {"Saved Model":model.state_dict()}
-                    best_preds = valid_preds
-                    best_targets = valid_targets
+                if mape < best_mape:
+                    best_mape = mape
+                    checkpoint = {"Saved Model":deepcopy(model.state_dict())}
+                    best_preds = all_preds
+                    best_targets = all_targets
                     early_stopping_index = 1
-                    best_ids = valid_estimation_ids
                 else:
                     early_stopping_index += 1
                 
@@ -1323,17 +1308,51 @@ class ModelTrainer():
                     early_stop = True
                 i += 1
         
-        if create_graphs:
-            self.create_graph(epochs_values,[train_mape_values,valid_mape_values],"Multimodal MAPE","Epochs","MAPE (%)")
-            self.create_graph(epochs_values,[train_rmse_values,valid_rmse_values],"Multimodal RMSE","Epochs","RMSE")
-            self.create_graph(epochs_values,[train_r2_values,valid_r2_values],"Multimodal R2Score","Epochs","R2Score")
-            self.create_graph([i + 1 for i in range(best_targets.shape[0])],y_values=[best_targets.reshape(best_targets.shape[0]),best_preds.reshape(best_preds.shape[0])],title="Ground Truth",xlabel="Data Point",ylabel="AAWDT",ground_truth=True)
+        # if create_graphs:
+        #     self.create_graph(epochs_values,[train_mape_values,valid_mape_values],"Multimodal MAPE","Epochs","MAPE (%)")
+        #     self.create_graph(epochs_values,[train_rmse_values,valid_rmse_values],"Multimodal RMSE","Epochs","RMSE")
+        #     self.create_graph(epochs_values,[train_r2_values,valid_r2_values],"Multimodal R2Score","Epochs","R2Score")
+        #     self.create_graph([i + 1 for i in range(best_targets.shape[0])],y_values=[best_targets.reshape(best_targets.shape[0]),best_preds.reshape(best_preds.shape[0])],title="Ground Truth",xlabel="Data Point",ylabel="AAWDT",ground_truth=True)
         save_name = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-        model_copy = MultimodalFullModel(int(self.granular_model_size)).to(device=device).load_state_dict(checkpoint['Saved Model'])
+        model_copy = MultimodalFullModel(int(self.granular_model_size)).to(device=device)
+        model_copy.load_state_dict(checkpoint['Saved Model'])
         
-        return (best_mape,save_name,model_copy,best_preds,best_targets, best_ids)
+        print(type(model_copy))
+        
+        return (best_mape,save_name,model_copy,best_preds,best_targets)
     
-    # def generate_estimates(self,model:nn.Module,estimation_dataset)
+    def generate_estimates(self,epochs: int, lr: float, batch_size: int, decay: float,annealing_rate=0.0001,annealing_range=30,file_save_name="kfold_results"):
+        model = MultimodalFullModel(granular_image_dimension=int(self.granular_model_size))
+        best_mape,save_name,model_copy,best_preds,best_targets, = self.train(model=model,epochs=int(epochs),lr=lr,batch_size=int(batch_size),decay=decay,annealing_range=int(annealing_range),annealing_rate=annealing_rate,train_data=self.full_dataset,test_data=None,create_graphs=False)
+        print(f'MAPE achieved: {best_mape}')
+        ordering, estimation_df = self.get_parametric_features(self.estimation_point_path,shuffle=False)
+        estimation_granular = self.convert_images_to_numpy(self.granular_path,ordering)
+        estimation_coarse = self.convert_images_to_numpy(self.coarse_path,ordering)
+        estimation_parameters = self.preprocess_data(estimation_df)
+
+        estimation_dataset = TensorDataset(
+            torch.from_numpy(estimation_coarse).permute(0,3,1,2) / 255,
+            torch.from_numpy(estimation_granular).permute(0,3,1,2) / 255,
+            torch.from_numpy(estimation_parameters)
+        )
+        
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        estimation_loader = DataLoader(dataset=estimation_dataset,batch_size=128,shuffle=False)
+        
+        estimations = []
+        torch.save(model_copy.state_dict(),'multimodalCNN.pt')
+        model_copy.eval()
+        for coarse, granular, param in estimation_loader:
+            coarse = coarse.to(device)
+            granular = granular.to(device)
+            param = param.to(device)
+            output = model_copy(coarse,granular,param)
+            estimations.append(output.detach().cpu().numpy())
+        
+        estimation_ndarry = np.concatenate(estimations)
+        
+        estimation_df['Predicted AAWDT'] = pd.Series(estimation_ndarry.reshape(estimation_ndarry.shape[0]))
+        estimation_df.to_excel(f"{file_save_name}.xlsx",index=False)
     
 
 if __name__ == "__main__":
@@ -1376,7 +1395,7 @@ if __name__ == "__main__":
     #         save_data['Coarse Param'].append(coarse)
     #         save_data['Granular Param'].append(granular)
     trainer = ModelTrainer(print_graphs=False,save_model=False,training_split=0.85,granular_model_size="256",coarse_model_size="8")
-    score = trainer.kfold(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate,num_fold=10)
+    score = trainer.generate_estimates(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate,file_save_name="Estimation_Results")
     print(score)
     # best_r2 = trainer.train_model(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate)
     # results = trainer.get_training_featues_with_predictions()
