@@ -619,7 +619,7 @@ class MultimodalFullModel(nn.Module):
         self.coarse_module = CoarseImageModel()
         self.granular_module = granular_model_dict[granular_image_dimension]
         # self.aerial_module = granular_model_dict[256]
-        self.fc1 = nn.Linear(in_features=1036,out_features=500)
+        self.fc1 = nn.Linear(in_features=combination_size,out_features=500)
         self.fc2 = nn.Linear(in_features=500,out_features=200)
         self.fc3 = nn.Linear(in_features=200,out_features=50)
         self.fc4 = nn.Linear(in_features=50,out_features=1)
@@ -847,7 +847,7 @@ class ModelTrainer():
         else:
             coarse_image_path = "/kaggle/input/coe-cnn-Experiment/coarse images"
             granular_image_path = "/kaggle/input/coe-cnn-Experiment/granular_images"
-            excel_path = "/kaggle/input/coe-cnn-Experiment/Set2_version_4.csv"
+            excel_path = "/kaggle/input/coe-cnn-Experiment/Set2.csv"
             
         
         granular_model_training_locations = {
@@ -1146,7 +1146,7 @@ class ModelTrainer():
                 )
             
             metric = self.train_model(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_rate=annealing_rate,annealing_range=annealing_range)
-            # print(f'Metric for fold {fold}: {metric}')
+            print(f'Metric for fold {fold}: {metric}')
             results = self.get_training_featues_with_predictions()
             dataframes.append(results)
             avg_score += metric
@@ -1317,8 +1317,6 @@ class ModelTrainer():
         model_copy = MultimodalFullModel(int(self.granular_model_size)).to(device=device)
         model_copy.load_state_dict(checkpoint['Saved Model'])
         
-        print(type(model_copy))
-        
         return (best_mape,save_name,model_copy,best_preds,best_targets,best_ids)
     
     def generate_estimates(self,epochs: int, lr: float, batch_size: int, decay: float,annealing_rate=0.0001,annealing_range=30,file_save_name="kfold_results"):
@@ -1390,21 +1388,22 @@ if __name__ == "__main__":
     }
     
     
-    for coarse in coarse_param:
-        for granular in granular_param:
-            trainer = ModelTrainer(print_graphs=False,save_model=False,training_split=0.85,granular_model_size=str(granular),coarse_model_size=str(coarse))
-            score = trainer.kfold(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate,save_name="Estimation_Results")
-            save_data['Coarse Param'].append(coarse)
-            save_data['Granular Param'].append(granular)
-            save_data['Score'].append(score)
+    # for coarse in coarse_param:
+    #     for granular in granular_param:
+    trainer = ModelTrainer(print_graphs=False,save_model=False,training_split=0.85,granular_model_size=str(50),coarse_model_size=str(16))
+    score = trainer.kfold(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate,save_name="Estimation_Results")
+    print(score)
+            # save_data['Coarse Param'].append(coarse)
+            # save_data['Granular Param'].append(granular)
+            # save_data['Score'].append(score)
     # best_r2 = trainer.train_model(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate)
     # results = trainer.get_training_featues_with_predictions()
     # results.to_excel('Prediction Results.xlsx',index=False)
     # print(best_r2)
     #         save_data['Score'].append(best_r2)
             
-    save_df = pd.DataFrame(data=save_data)
-    save_df.to_excel('Sensitivity_results.xlsx')
+    # save_df = pd.DataFrame(data=save_data)
+    # save_df.to_excel('Sensitivity_results.xlsx')
     # optimizer = BayesianOptimization(
     #     f=trainer.train_model,
     #     pbounds=pbounds,
