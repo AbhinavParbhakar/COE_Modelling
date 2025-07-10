@@ -588,19 +588,19 @@ class MultimodalFullModel(nn.Module):
         
         
         granular_size_dict = {
-            256 : 540,
-            512 : 540,
-            128 : 405,
-            64 : 405,
-            32 : 405,
+            400 : 540,
+            200 : 540,
+            100 : 540,
+            50 : 540,
+            25 : 540,
         }
         
         granular_model_dict = {
-            256 : TwoFiftySixGranularImageModel(),
-            512 : FiveTwelveGranularImageModel(),
-            128 : OneTwentyEightGranularImageModel(),
-            64 : SixtyFourGranularImageModel(),
-            32 : ThirtyTwoGranularImageModel(),
+            400 : TwoFiftySixGranularImageModel(),
+            200 : TwoFiftySixGranularImageModel(),
+            100 : TwoFiftySixGranularImageModel(),
+            50 : TwoFiftySixGranularImageModel(),
+            25 : TwoFiftySixGranularImageModel(),
         }
 
         self.key_dimension = 120
@@ -851,19 +851,19 @@ class ModelTrainer():
             
         
         granular_model_training_locations = {
-            '256' : "/kaggle/input/coe-cnn-Experiment/Final_aerial_final",
-            '512' : "/kaggle/input/coe-cnn-Experiment/512x512-granular-images",
-            '128' : "/kaggle/input/coe-cnn-Experiment/128x128-granular-images",
-            '64' : "/kaggle/input/coe-cnn-Experiment/64x64-granular-images",
-            '32' : "/kaggle/input/coe-cnn-Experiment/32x32-granular-images"
+            '400' : "/kaggle/input/coe-cnn-Experiment/400x400-aerial-set2",
+            '200' : "/kaggle/input/coe-cnn-Experiment/200x200-aerial-set2",
+            '100' : "/kaggle/input/coe-cnn-Experiment/100x100-aerial-set2",
+            '50' : "/kaggle/input/coe-cnn-Experiment/50x50-aerial-set2",
+            '25' : "/kaggle/input/coe-cnn-Experiment/25x25-aerial-set2"
         }
 
         coarse_model_training_locations = {
-            '32' : "/kaggle/input/coe-cnn-Experiment/32x32-coarse-images",
-            '16' : "/kaggle/input/coe-cnn-Experiment/16x16-coarse_IQR",
-            '8' : "/kaggle/input/coe-cnn-Experiment/coarse_all_images_8x8",
-            '4' : "/kaggle/input/coe-cnn-Experiment/4x4-coarse-images",
-            '2' : "/kaggle/input/coe-cnn-Experiment/2x2-coarse-images"
+            '32' : "/kaggle/input/coe-cnn-Experiment/32x32-coarse-set2",
+            '16' : "/kaggle/input/coe-cnn-Experiment/16x16-coarse-set2",
+            '8' : "/kaggle/input/coe-cnn-Experiment/8x8-coarse-set2",
+            '4' : "/kaggle/input/coe-cnn-Experiment/4x4-coarse-set2",
+            '2' : "/kaggle/input/coe-cnn-Experiment/2x2-coarse-set2"
         }
         
         # aerial_images_path = "/kaggle/input/coe-cnn-Experiment/high_res_granular"
@@ -1135,7 +1135,6 @@ class ModelTrainer():
                 # torch.from_numpy(aerial_train).permute(0,3,1,2) / 255,
                 torch.from_numpy(param_train),
                 torch.from_numpy(aawdt_train),
-                torch.from_numpy(indices_train)
                 )
             self.test_dataset = TensorDataset(
                 torch.from_numpy(coarse_test).permute(0,3,1,2) / 255,
@@ -1147,7 +1146,7 @@ class ModelTrainer():
                 )
             
             metric = self.train_model(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_rate=annealing_rate,annealing_range=annealing_range)
-            print(f'Metric for fold {fold}: {metric}')
+            # print(f'Metric for fold {fold}: {metric}')
             results = self.get_training_featues_with_predictions()
             dataframes.append(results)
             avg_score += metric
@@ -1212,7 +1211,7 @@ class ModelTrainer():
         optim = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=decay)
         scheduler = CosineAnnealingLR(optimizer=optim,T_max=annealing_range,eta_min=annealing_rate)
         training_loader = DataLoader(dataset=train_data, batch_size=batch_size,shuffle=True,drop_last=True)
-        # test_loader = DataLoader(dataset=test_data, batch_size=batch_size,shuffle=True)
+        test_loader = DataLoader(dataset=test_data, batch_size=batch_size,shuffle=True)
         train_r2_values = []
         valid_r2_values = []
         train_rmse_values = []
@@ -1263,43 +1262,44 @@ class ModelTrainer():
                 file.write(f'RMSE is {training_loss:.3f}\n')
                 file.write('---------------------------\n')
 
-                # model.eval()
-                # valid_targets, valid_preds = [], []
-                # valid_indices = []
-                # with torch.no_grad():
-                #     for coarse_input, granular_input, param_input, target,indices in test_loader:
-                #         pred = model(coarse_input.to(device), granular_input.to(device),param_input.to(device))
-                #         valid_targets.append(target.detach().cpu().numpy())
-                #         valid_preds.append(pred.detach().cpu().numpy())
-                #         valid_indices.append(indices.detach().cpu().numpy())
+                model.eval()
+                valid_targets, valid_preds = [], []
+                valid_indices = []
+                with torch.no_grad():
+                    for coarse_input, granular_input, param_input, target,indices in test_loader:
+                        pred = model(coarse_input.to(device), granular_input.to(device),param_input.to(device))
+                        valid_targets.append(target.detach().cpu().numpy())
+                        valid_preds.append(pred.detach().cpu().numpy())
+                        valid_indices.append(indices.detach().cpu().numpy())
 
-                # valid_targets = np.concatenate(valid_targets)
-                # valid_estimation_ids = np.concatenate(valid_indices)
-                # valid_preds = np.concatenate(valid_preds)
-                # valid_loss = np.sqrt(mean_squared_error(valid_targets, valid_preds))
-                # valid_r2 = r2_score(valid_targets, valid_preds)
-                # valid_mape = mean_absolute_percentage_error(valid_targets, valid_preds)
+                valid_targets = np.concatenate(valid_targets)
+                valid_estimation_ids = np.concatenate(valid_indices)
+                valid_preds = np.concatenate(valid_preds)
+                valid_loss = np.sqrt(mean_squared_error(valid_targets, valid_preds))
+                valid_r2 = r2_score(valid_targets, valid_preds)
+                valid_mape = mean_absolute_percentage_error(valid_targets, valid_preds)
                 
-                # #scheduler.step(mean_squared_error(valid_targets, valid_preds))
-                # valid_mape_values.append(valid_mape * 100)
-                # valid_rmse_values.append(valid_loss)
-                # valid_r2_values.append(valid_r2)
+                #scheduler.step(mean_squared_error(valid_targets, valid_preds))
+                valid_mape_values.append(valid_mape * 100)
+                valid_rmse_values.append(valid_loss)
+                valid_r2_values.append(valid_r2)
                 
                 scheduler.step()
                 
 
-                # file.write(f'\n---------------------------\nValidation Epoch: {i}\n')
-                # file.write(f'r2 score is {valid_r2:.3f}\n')
-                # file.write(f'MAPE is {valid_mape * 100:.2f}%\n')
-                # file.write(f'RMSE is {valid_loss:.3f}\n')
-                # file.write('---------------------------\n')
+                file.write(f'\n---------------------------\nValidation Epoch: {i}\n')
+                file.write(f'r2 score is {valid_r2:.3f}\n')
+                file.write(f'MAPE is {valid_mape * 100:.2f}%\n')
+                file.write(f'RMSE is {valid_loss:.3f}\n')
+                file.write('---------------------------\n')
                 
                 # Early Stopping Mechanism
-                if mape < best_mape:
-                    best_mape = mape
+                if valid_mape < best_mape:
+                    best_ids = valid_estimation_ids
+                    best_mape = valid_mape
                     checkpoint = {"Saved Model":deepcopy(model.state_dict())}
-                    best_preds = all_preds
-                    best_targets = all_targets
+                    best_preds = valid_preds
+                    best_targets = valid_targets
                     early_stopping_index = 1
                 else:
                     early_stopping_index += 1
@@ -1319,7 +1319,7 @@ class ModelTrainer():
         
         print(type(model_copy))
         
-        return (best_mape,save_name,model_copy,best_preds,best_targets)
+        return (best_mape,save_name,model_copy,best_preds,best_targets,best_ids)
     
     def generate_estimates(self,epochs: int, lr: float, batch_size: int, decay: float,annealing_rate=0.0001,annealing_range=30,file_save_name="kfold_results"):
         model = MultimodalFullModel(granular_image_dimension=int(self.granular_model_size))
@@ -1381,7 +1381,7 @@ if __name__ == "__main__":
     lr = 0.0007166975503570836
     
     coarse_param = ['32', '16', '8', '4', '2']
-    granular_param = ['256', '512', '128', '64', '32']
+    granular_param = ['400', '200', '100', '50', '25']
 
     save_data = {
         'Granular Param' : [],
@@ -1390,21 +1390,21 @@ if __name__ == "__main__":
     }
     
     
-    # for coarse in coarse_param:
-    #     for granular in granular_param:
-    #         save_data['Coarse Param'].append(coarse)
-    #         save_data['Granular Param'].append(granular)
-    trainer = ModelTrainer(print_graphs=False,save_model=False,training_split=0.85,granular_model_size="256",coarse_model_size="8")
-    score = trainer.generate_estimates(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate,file_save_name="Estimation_Results")
-    print(score)
+    for coarse in coarse_param:
+        for granular in granular_param:
+            trainer = ModelTrainer(print_graphs=False,save_model=False,training_split=0.85,granular_model_size=str(granular),coarse_model_size=str(coarse))
+            score = trainer.kfold(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate,save_name="Estimation_Results")
+            save_data['Coarse Param'].append(coarse)
+            save_data['Granular Param'].append(granular)
+            save_data['Score'].append(score)
     # best_r2 = trainer.train_model(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate)
     # results = trainer.get_training_featues_with_predictions()
     # results.to_excel('Prediction Results.xlsx',index=False)
     # print(best_r2)
     #         save_data['Score'].append(best_r2)
             
-    # save_df = pd.DataFrame(data=save_data)
-    # save_df.to_excel('Sensitivity_results.xlsx')
+    save_df = pd.DataFrame(data=save_data)
+    save_df.to_excel('Sensitivity_results.xlsx')
     # optimizer = BayesianOptimization(
     #     f=trainer.train_model,
     #     pbounds=pbounds,
