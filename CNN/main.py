@@ -614,7 +614,7 @@ class MultimodalFullModel(nn.Module):
         coarse_image_size = 240
         parametric_data_size = 256
         # combination_size = granular_size_dict[granular_image_dimension] + coarse_image_size + parametric_data_size
-        combination_size = granular_size_dict[granular_image_dimension] + parametric_data_size + coarse_image_size
+        combination_size = parametric_data_size
         self.parametric_module = NN()
         self.coarse_module = CoarseImageModel()
         self.granular_module = granular_model_dict[granular_image_dimension]
@@ -727,9 +727,9 @@ class MultimodalFullModel(nn.Module):
             return torch.matmul(weights,value) # B 9 90
         
         
-    def forward(self,coarse_input:torch.FloatTensor,granular_input:torch.FloatTensor,parametric_input:torch.FloatTensor):
-        coarse_image_embedding = self.coarse_module(coarse_input)
-        granular_image_embedding = self.granular_module(granular_input)
+    def forward(self,parametric_input:torch.FloatTensor):
+        # coarse_image_embedding = self.coarse_module(coarse_input)
+        # granular_image_embedding = self.granular_module(granular_input)
         # aerial_image_embedding = self.aerial_module(aerial_input)
         
         parametric_embeddings = self.parametric_module(parametric_input)
@@ -747,8 +747,8 @@ class MultimodalFullModel(nn.Module):
         
         # print(coarse_image_embedding.shape,granular_image_embedding.shape,parametric_embeddings.shape)
         
-        combination = torch.cat(tensors=(coarse_image_embedding,granular_image_embedding,parametric_embeddings),dim=1)
-        
+        # combination = torch.cat(tensors=(coarse_image_embedding,granular_image_embedding,parametric_embeddings),dim=1)
+        combination = parametric_embeddings
         # combination = self.dropout(combination)
         
         output = self.fc1(combination)
@@ -1130,15 +1130,15 @@ class ModelTrainer():
 
             
             self.train_dataset = TensorDataset(
-                torch.from_numpy(coarse_train).permute(0,3,1,2) / 255,
-                torch.from_numpy(granular_train).permute(0,3,1,2) / 255,
+                # torch.from_numpy(coarse_train).permute(0,3,1,2) / 255,
+                # torch.from_numpy(granular_train).permute(0,3,1,2) / 255,
                 # torch.from_numpy(aerial_train).permute(0,3,1,2) / 255,
                 torch.from_numpy(param_train),
                 torch.from_numpy(aawdt_train),
                 )
             self.test_dataset = TensorDataset(
-                torch.from_numpy(coarse_test).permute(0,3,1,2) / 255,
-                torch.from_numpy(granular_test).permute(0,3,1,2) / 255,
+                # torch.from_numpy(coarse_test).permute(0,3,1,2) / 255,
+                # torch.from_numpy(granular_test).permute(0,3,1,2) / 255,
                 # torch.from_numpy(aerial_test).permute(0,3,1,2) / 255,
                 torch.from_numpy(param_test),
                 torch.from_numpy(aawdt_test),
@@ -1235,9 +1235,9 @@ class ModelTrainer():
                 model.train()
                 all_targets, all_preds = [], []
 
-                for coarse_input, granular_input, param_input, target in training_loader:
+                for param_input, target in training_loader:
                     optim.zero_grad()
-                    pred = model(coarse_input.to(device), granular_input.to(device),param_input.to(device))
+                    pred = model(param_input.to(device))
                     loss = loss_fn(pred, target.to(device))
                     loss.backward()
                     optim.step()
@@ -1266,8 +1266,8 @@ class ModelTrainer():
                 valid_targets, valid_preds = [], []
                 valid_indices = []
                 with torch.no_grad():
-                    for coarse_input, granular_input, param_input, target,indices in test_loader:
-                        pred = model(coarse_input.to(device), granular_input.to(device),param_input.to(device))
+                    for param_input, target,indices in test_loader:
+                        pred = model(param_input.to(device))
                         valid_targets.append(target.detach().cpu().numpy())
                         valid_preds.append(pred.detach().cpu().numpy())
                         valid_indices.append(indices.detach().cpu().numpy())
