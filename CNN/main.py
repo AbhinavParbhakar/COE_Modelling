@@ -847,7 +847,7 @@ class ModelTrainer():
         else:
             coarse_image_path = "/kaggle/input/coe-cnn-Experiment/coarse images"
             granular_image_path = "/kaggle/input/coe-cnn-Experiment/granular_images"
-            excel_path = "/kaggle/input/coe-cnn-Experiment/Set2_version_4.csv"
+            excel_path = "/kaggle/input/coe-cnn-Experiment/Set2.csv"
             
         
         granular_model_training_locations = {
@@ -1390,21 +1390,21 @@ if __name__ == "__main__":
     }
     
     
-    for coarse in coarse_param:
-        for granular in granular_param:
-            trainer = ModelTrainer(print_graphs=False,save_model=False,training_split=0.85,granular_model_size=str(granular),coarse_model_size=str(coarse))
-            score = trainer.kfold(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate,save_name="Estimation_Results")
-            save_data['Coarse Param'].append(coarse)
-            save_data['Granular Param'].append(granular)
-            save_data['Score'].append(score)
+    # for coarse in coarse_param:
+    #     for granular in granular_param:
+    trainer = ModelTrainer(print_graphs=False,save_model=False,training_split=0.85,granular_model_size=str(25),coarse_model_size=str(16))
+    score = trainer.kfold(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate,save_name="Estimation_Results")
+            # save_data['Coarse Param'].append(coarse)
+            # save_data['Granular Param'].append(granular)
+            # save_data['Score'].append(score)
     # best_r2 = trainer.train_model(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate)
     # results = trainer.get_training_featues_with_predictions()
     # results.to_excel('Prediction Results.xlsx',index=False)
     # print(best_r2)
     #         save_data['Score'].append(best_r2)
             
-    save_df = pd.DataFrame(data=save_data)
-    save_df.to_excel('Sensitivity_results.xlsx')
+    # save_df = pd.DataFrame(data=save_data)
+    # save_df.to_excel('Sensitivity_results.xlsx')
     # optimizer = BayesianOptimization(
     #     f=trainer.train_model,
     #     pbounds=pbounds,
