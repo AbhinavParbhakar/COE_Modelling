@@ -1289,7 +1289,7 @@ class ModelTrainer():
         best_preds = None
         best_targets = None
         training_indices = dataset.training_indices
-        # valid_indices = dataset.valid_indices
+        valid_indices = dataset.valid_indices
         target = dataset.target.to(device)
         data = dataset.data.to(device)
         with open('training.txt', 'w') as file:
@@ -1331,35 +1331,35 @@ class ModelTrainer():
                 #         valid_targets.append(pred.detach().cpu().numpy())
                 #         valid_preds.append(target.detach().cpu().numpy())
 
-                # valid_targets.append(target[valid_indices].detach().cpu().numpy())
-                # valid_preds.append(pred[valid_indices].detach().cpu().numpy())                
+                valid_targets.append(target[valid_indices].detach().cpu().numpy())
+                valid_preds.append(pred[valid_indices].detach().cpu().numpy())                
 
-                # valid_targets = np.concatenate(valid_targets)
-                # valid_preds = np.concatenate(valid_preds)
-                # valid_loss = np.sqrt(mean_squared_error(valid_targets, valid_preds))
-                # valid_r2 = r2_score(valid_targets, valid_preds)
-                # valid_mape = mean_absolute_percentage_error(valid_targets, valid_preds)
+                valid_targets = np.concatenate(valid_targets)
+                valid_preds = np.concatenate(valid_preds)
+                valid_loss = np.sqrt(mean_squared_error(valid_targets, valid_preds))
+                valid_r2 = r2_score(valid_targets, valid_preds)
+                valid_mape = mean_absolute_percentage_error(valid_targets, valid_preds)
                 
                 #scheduler.step(mean_squared_error(valid_targets, valid_preds))
-                # valid_mape_values.append(valid_mape * 100)
-                # valid_rmse_values.append(valid_loss)
-                # valid_r2_values.append(valid_r2)
+                valid_mape_values.append(valid_mape * 100)
+                valid_rmse_values.append(valid_loss)
+                valid_r2_values.append(valid_r2)
                 
                 scheduler.step()
                 
 
-                # file.write(f'\n---------------------------\nValidation Epoch: {i}\n')
-                # file.write(f'r2 score is {valid_r2:.3f}\n')
-                # file.write(f'MAPE is {valid_mape * 100:.2f}%\n')
-                # file.write(f'RMSE is {valid_loss:.3f}\n')
-                # file.write('---------------------------\n')
+                file.write(f'\n---------------------------\nValidation Epoch: {i}\n')
+                file.write(f'r2 score is {valid_r2:.3f}\n')
+                file.write(f'MAPE is {valid_mape * 100:.2f}%\n')
+                file.write(f'RMSE is {valid_loss:.3f}\n')
+                file.write('---------------------------\n')
                 
                 # Early Stopping Mechanism
-                if mape < best_mape:
-                    best_mape = mape
+                if valid_mape < best_mape:
+                    best_mape = valid_mape
                     checkpoint = {"Saved Model":deepcopy(model.state_dict())}
-                    best_preds = all_preds
-                    best_targets = all_targets
+                    best_preds = valid_preds
+                    best_targets = valid_targets
                     early_stopping_index = 1
                 else:
                     early_stopping_index += 1
@@ -1464,7 +1464,7 @@ if __name__ == "__main__":
     adj_path = '/kaggle/input/coe-cnn-Experiment/Adjacency_Matrix_150_meters.csv' 
     trainer = ModelTrainer(print_graphs=False,save_model=False,training_split=0.85,granular_model_size="256",coarse_model_size="8",adj_matrix_path=adj_path)
     # trainer.generate_embeddings(apply_pca=False)
-    trainer.generate_estimates(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate)
+    trainer.kfold(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate,num_fold=10,save_name="experiment")
     # score = trainer.kfold(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate)
     # print(score)
         # scores.append(scores)
