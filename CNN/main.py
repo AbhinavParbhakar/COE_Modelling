@@ -39,7 +39,7 @@ class NN(nn.Module):
     def __init__(self):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(8,64),
+            nn.Linear(6,64),
             nn.BatchNorm1d(64),
             nn.ReLU(),
             
@@ -920,7 +920,7 @@ class ModelTrainer():
         Then return the output as a nd.ndarray 
         """
         transform = ColumnTransformer(transformers=[
-            ('Standard Scale',StandardScaler(),['Lat','Long','Speed','Lanes']),
+            ('Standard Scale',StandardScaler(),['Speed','Lanes']),
         ],remainder='passthrough')
         
         return transform.fit_transform(df).astype(np.float32)
@@ -947,7 +947,7 @@ class ModelTrainer():
             shuffle_index = pd.Series(np.random.permutation(df.shape[0]))
             df = df.iloc[shuffle_index]
         ordering = df['Estimation_point'].tolist()
-        df = df[['Lat','Long','Collector','Local','Major Arterial','Minor Arterial','Speed','Lanes']]
+        df = df[['Collector','Local','Major Arterial','Minor Arterial','Speed','Lanes']]
         
         return ordering, df
 
