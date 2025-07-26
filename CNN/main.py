@@ -4,7 +4,7 @@ from torch.utils.data import DataLoader,Dataset, TensorDataset
 from PIL import Image
 import pandas as pd
 import numpy as np
-from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingLR
+from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingLR, CosineAnnealingWarmRestarts
 import os
 import matplotlib.pyplot as plt
 from torchvision.transforms import ToTensor
@@ -16,7 +16,9 @@ from sklearn.preprocessing import OneHotEncoder,StandardScaler
 import sys
 import datetime
 import math
+import time
 from copy import deepcopy
+import random
 
 # Check if running on Kaggle and install dependencies if not already installed
 if "KAGGLE_KERNEL_RUN_TYPE" in os.environ:
@@ -30,9 +32,17 @@ if "KAGGLE_KERNEL_RUN_TYPE" in os.environ:
 from bayes_opt import BayesianOptimization
 
 seed = 42
+random.seed(seed)
+os.environ['PYTHONHASHSEED'] = str(seed)
 np.random.seed(seed)
 torch.manual_seed(seed)
+torch.cuda.manual_seed(seed)
 torch.cuda.manual_seed_all(seed)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+# Enable deterministic algorithms
+torch.use_deterministic_algorithms(True)
+os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
 
 
 class NN(nn.Module):
@@ -51,9 +61,9 @@ class NN(nn.Module):
             nn.BatchNorm1d(256),
             nn.ReLU(),
             
-            # nn.Linear(256,325),
-            # nn.BatchNorm1d(325),
-            # nn.ReLU(),
+            nn.Linear(256,540),
+            nn.BatchNorm1d(540),
+            nn.ReLU(),
             
         )
     
@@ -612,14 +622,13 @@ class MultimodalFullModel(nn.Module):
         
         
         coarse_image_size = 240
-        parametric_data_size = 256
+        parametric_data_size = 540
         # combination_size = granular_size_dict[granular_image_dimension] + coarse_image_size + parametric_data_size
-        combination_size = granular_size_dict[granular_image_dimension] + parametric_data_size + coarse_image_size
+        combination_size = granular_size_dict[granular_image_dimension] + parametric_data_size
         self.parametric_module = NN()
-        self.coarse_module = CoarseImageModel()
         self.granular_module = granular_model_dict[granular_image_dimension]
         # self.aerial_module = granular_model_dict[256]
-        self.fc1 = nn.Linear(in_features=1036,out_features=500)
+        self.fc1 = nn.Linear(in_features=combination_size,out_features=500)
         self.fc2 = nn.Linear(in_features=500,out_features=200)
         self.fc3 = nn.Linear(in_features=200,out_features=50)
         self.fc4 = nn.Linear(in_features=50,out_features=1)
@@ -727,8 +736,8 @@ class MultimodalFullModel(nn.Module):
             return torch.matmul(weights,value) # B 9 90
         
         
-    def forward(self,coarse_input:torch.FloatTensor,granular_input:torch.FloatTensor,parametric_input:torch.FloatTensor):
-        coarse_image_embedding = self.coarse_module(coarse_input)
+    def forward(self,granular_input:torch.FloatTensor,parametric_input:torch.FloatTensor):
+        # coarse_image_embedding = self.coarse_module(coarse_input)
         granular_image_embedding = self.granular_module(granular_input)
         # aerial_image_embedding = self.aerial_module(aerial_input)
         
@@ -747,7 +756,7 @@ class MultimodalFullModel(nn.Module):
         
         # print(coarse_image_embedding.shape,granular_image_embedding.shape,parametric_embeddings.shape)
         
-        combination = torch.cat(tensors=(coarse_image_embedding,granular_image_embedding,parametric_embeddings),dim=1)
+        combination = torch.cat(tensors=(granular_image_embedding,parametric_embeddings),dim=1)
         
         # combination = self.dropout(combination)
         
@@ -847,7 +856,7 @@ class ModelTrainer():
         else:
             coarse_image_path = "/kaggle/input/coe-cnn-Experiment/coarse images"
             granular_image_path = "/kaggle/input/coe-cnn-Experiment/granular_images"
-            excel_path = "/kaggle/input/coe-cnn-Experiment/Set2.csv"
+            excel_path = "/kaggle/input/coe-cnn-experiment/Set2.csv"
             
         
         granular_model_training_locations = {
@@ -855,12 +864,12 @@ class ModelTrainer():
             '200' : "/kaggle/input/coe-cnn-Experiment/200x200-aerial-set2",
             '100' : "/kaggle/input/coe-cnn-Experiment/100x100-aerial-set2",
             '50' : "/kaggle/input/coe-cnn-Experiment/50x50-aerial-set2",
-            '25' : "/kaggle/input/coe-cnn-Experiment/25x25-aerial-set2"
+            '25' : "/kaggle/input/coe-cnn-experiment/straight-segments"
         }
 
         coarse_model_training_locations = {
             '32' : "/kaggle/input/coe-cnn-Experiment/32x32-coarse-set2",
-            '16' : "/kaggle/input/coe-cnn-Experiment/16x16-coarse-set2",
+            '16' : "/kaggle/input/coe-cnn-experiment/16x16-coarse-set2",
             '8' : "/kaggle/input/coe-cnn-Experiment/8x8-coarse-set2",
             '4' : "/kaggle/input/coe-cnn-Experiment/4x4-coarse-set2",
             '2' : "/kaggle/input/coe-cnn-Experiment/2x2-coarse-set2"
@@ -950,6 +959,19 @@ class ModelTrainer():
         df = df[['Lat','Long','Collector','Local','Major Arterial','Minor Arterial','Speed','Lanes']]
         
         return ordering, df
+    
+    def init_weights(self,m):
+        if isinstance(m, nn.Linear):
+            torch.nn.init.xavier_uniform_(m.weight, gain=1.0)
+            if m.bias is not None:
+                torch.nn.init.zeros_(m.bias)
+        elif isinstance(m, nn.Conv2d):
+            torch.nn.init.kaiming_uniform_(m.weight, mode='fan_out', nonlinearity='relu')
+            if m.bias is not None:
+                torch.nn.init.zeros_(m.bias)
+        elif isinstance(m, nn.BatchNorm1d) or isinstance(m, nn.BatchNorm2d):
+            torch.nn.init.ones_(m.weight)
+            torch.nn.init.zeros_(m.bias)
 
     def convert_images_to_numpy(self,image_path:str,ordering:list)->np.ndarray:
         """
@@ -978,6 +1000,7 @@ class ModelTrainer():
         
         
         for dirpath,dirnames,filenames in nested_path_generator:
+            filenames = sorted(filenames)
             image_paths = {name.split('.')[0] : os.path.join(dirpath,name) for name in filenames}
             
             
@@ -1080,7 +1103,7 @@ class ModelTrainer():
             plt.title(title)
             plt.savefig(f'{title}.png')
     
-    def kfold(self,epochs: int, lr: float, batch_size: int, decay: float,annealing_rate=0.0001,annealing_range=30,num_fold=10,save_name="kfold_results"):
+    def kfold(self,epochs: int, lr: float, batch_size: int, decay: float,annealing_rate=0.0001,annealing_range=30,num_fold=10,early_stopping=50,save_name="kfold_results"):
         """
         Conduct k-fold CV, and saves the output results as an excel file under the name ``num_fold`` ``save_name``.xlsx.
         Returns the average MAPE across all folds.
@@ -1099,6 +1122,7 @@ class ModelTrainer():
         fold_subsets = []
         avg_score = 0
         dataframes = []
+        start_time = time.time()
         
         i = 1
         while i <= len(fold_indices):
@@ -1130,14 +1154,14 @@ class ModelTrainer():
 
             
             self.train_dataset = TensorDataset(
-                torch.from_numpy(coarse_train).permute(0,3,1,2) / 255,
+                # torch.from_numpy(coarse_train).permute(0,3,1,2) / 255,
                 torch.from_numpy(granular_train).permute(0,3,1,2) / 255,
                 # torch.from_numpy(aerial_train).permute(0,3,1,2) / 255,
                 torch.from_numpy(param_train),
                 torch.from_numpy(aawdt_train),
                 )
             self.test_dataset = TensorDataset(
-                torch.from_numpy(coarse_test).permute(0,3,1,2) / 255,
+                # torch.from_numpy(coarse_test).permute(0,3,1,2) / 255,
                 torch.from_numpy(granular_test).permute(0,3,1,2) / 255,
                 # torch.from_numpy(aerial_test).permute(0,3,1,2) / 255,
                 torch.from_numpy(param_test),
@@ -1145,7 +1169,7 @@ class ModelTrainer():
                 torch.from_numpy(indices_test)
                 )
             
-            metric = self.train_model(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_rate=annealing_rate,annealing_range=annealing_range)
+            metric = self.train_model(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_rate=annealing_rate,annealing_range=annealing_range,early_stopping=early_stopping)
             # print(f'Metric for fold {fold}: {metric}')
             results = self.get_training_featues_with_predictions()
             dataframes.append(results)
@@ -1155,14 +1179,28 @@ class ModelTrainer():
         final_result = pd.concat(objs=dataframes,axis=0,ignore_index=True)
         file_name = self.excel_path.split('/')[-1]
         final_result.to_excel(f"{num_fold}{save_name}-{file_name.split('.')[0]}.xlsx",index=False)
-        return avg_score / num_fold
+        end_time = time.time()
+        seconds = (end_time - start_time) % 60
+        minutes = (end_time - start_time - seconds) / 60
+        
+        # print('Epochs: ',epochs)
+        # print('Learning rate: ',lr)
+        # print('Batch size: ',batch_size)
+        # print('Decay: ',decay)
+        # print('Eta_Min: ',annealing_rate)
+        # print('T_Max: ',annealing_range)
+        print(f'Time taken: {minutes}m {seconds}s')
+        
+        print('Score: ',avg_score / num_fold)
+        return avg_score / num_fold * -1
             
             
         
     
-    def train_model(self,epochs: int, lr: float, batch_size: int, decay: float,annealing_rate=0.0001,annealing_range=30):
+    def train_model(self,epochs: int, lr: float, batch_size: int, decay: float,annealing_rate=0.0001,annealing_range=30,early_stopping=50):
         self.model = MultimodalFullModel(int(self.granular_model_size))
-        best_r2,save_name,model_copy,best_preds,best_targets,best_ids = self.train(model=self.model,epochs=int(epochs),lr=lr,batch_size=int(batch_size),decay=decay,annealing_range=int(annealing_range),annealing_rate=annealing_rate,train_data=self.train_dataset,test_data=self.test_dataset,create_graphs=self.print_graphs)
+        self.model.apply(self.init_weights)
+        best_r2,save_name,model_copy,best_preds,best_targets,best_ids = self.train(model=self.model,epochs=int(epochs),lr=lr,batch_size=int(batch_size),decay=decay,annealing_range=int(annealing_range),annealing_rate=annealing_rate,train_data=self.train_dataset,test_data=self.test_dataset,create_graphs=self.print_graphs,early_stopping=early_stopping)
         self.best_preds = best_preds
         self.best_targets = best_targets
         self.best_ids = best_ids
@@ -1182,7 +1220,7 @@ class ModelTrainer():
         return result_df
         
     
-    def train(self,model:nn.Module,epochs: int, lr: float, batch_size: int, decay: float, train_data:Dataset, test_data:Dataset,create_graphs=False,annealing_rate=0.0001,annealing_range=30)->tuple:
+    def train(self,model:nn.Module,epochs: int, lr: float, batch_size: int, decay: float, train_data:Dataset, test_data:Dataset,create_graphs=False,annealing_rate=0.0001,annealing_range=30,early_stopping=50)->tuple:
         """
         Parameters
         ----------
@@ -1209,9 +1247,10 @@ class ModelTrainer():
         model = model.to(device)
         loss_fn = torch.nn.functional.huber_loss
         optim = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=decay)
-        scheduler = CosineAnnealingLR(optimizer=optim,T_max=annealing_range,eta_min=annealing_rate)
-        training_loader = DataLoader(dataset=train_data, batch_size=batch_size,shuffle=True,drop_last=True)
-        test_loader = DataLoader(dataset=test_data, batch_size=batch_size,shuffle=True)
+        # scheduler = CosineAnnealingLR(optimizer=optim,T_max=annealing_range,eta_min=annealing_rate)
+        scheduler = CosineAnnealingWarmRestarts(optimizer=optim,T_0=annealing_range,eta_min=annealing_rate)
+        training_loader = DataLoader(dataset=train_data, batch_size=batch_size,shuffle=True,drop_last=True,num_workers=0)
+        test_loader = DataLoader(dataset=test_data, batch_size=batch_size,shuffle=True,num_workers=0)
         train_r2_values = []
         valid_r2_values = []
         train_rmse_values = []
@@ -1221,7 +1260,7 @@ class ModelTrainer():
         epochs_values = []
         early_stop = False
         
-        early_stopping_threshold = 50
+        early_stopping_threshold = early_stopping
         early_stopping_index = 1
         best_mape = 200
         i = 0
@@ -1235,13 +1274,13 @@ class ModelTrainer():
                 model.train()
                 all_targets, all_preds = [], []
 
-                for coarse_input, granular_input, param_input, target in training_loader:
+                for batch_id, (granular_input, param_input, target) in enumerate(training_loader):
                     optim.zero_grad()
-                    pred = model(coarse_input.to(device), granular_input.to(device),param_input.to(device))
+                    pred = model(granular_input.to(device),param_input.to(device))
                     loss = loss_fn(pred, target.to(device))
                     loss.backward()
                     optim.step()
-
+                    scheduler.step(i  + batch_id  / len(training_loader))
                     all_targets.append(target.detach().cpu().numpy())
                     all_preds.append(pred.detach().cpu().numpy())
 
@@ -1266,8 +1305,8 @@ class ModelTrainer():
                 valid_targets, valid_preds = [], []
                 valid_indices = []
                 with torch.no_grad():
-                    for coarse_input, granular_input, param_input, target,indices in test_loader:
-                        pred = model(coarse_input.to(device), granular_input.to(device),param_input.to(device))
+                    for granular_input, param_input, target,indices in test_loader:
+                        pred = model( granular_input.to(device),param_input.to(device))
                         valid_targets.append(target.detach().cpu().numpy())
                         valid_preds.append(pred.detach().cpu().numpy())
                         valid_indices.append(indices.detach().cpu().numpy())
@@ -1280,11 +1319,12 @@ class ModelTrainer():
                 valid_mape = mean_absolute_percentage_error(valid_targets, valid_preds)
                 
                 #scheduler.step(mean_squared_error(valid_targets, valid_preds))
+                # scheduler.step()
                 valid_mape_values.append(valid_mape * 100)
                 valid_rmse_values.append(valid_loss)
                 valid_r2_values.append(valid_r2)
                 
-                scheduler.step()
+                
                 
 
                 file.write(f'\n---------------------------\nValidation Epoch: {i}\n')
@@ -1316,8 +1356,6 @@ class ModelTrainer():
         save_name = datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
         model_copy = MultimodalFullModel(int(self.granular_model_size)).to(device=device)
         model_copy.load_state_dict(checkpoint['Saved Model'])
-        
-        print(type(model_copy))
         
         return (best_mape,save_name,model_copy,best_preds,best_targets,best_ids)
     
@@ -1366,19 +1404,19 @@ if __name__ == "__main__":
     
     pbounds = {
         'lr' : (0.0001,0.001),
-        'epochs' : (50,200),
+        'epochs' : (50,300),
         'batch_size' : (5,32),
         'decay' : (0, 0.00005),
         'annealing_range' : (10,200),
-        'annealing_rate' : (0.0001,0.05)
+        'annealing_rate' : (0.00001,0.05),
     }
     
-    annealing_range = 45
-    annealing_rate = 0.01734348027944808
-    batch_size = 15
-    decay = 0.00002694
-    epochs = 112
-    lr = 0.0007166975503570836
+    annealing_range = 134.69178272757267
+    annealing_rate = 0.005073508303579221
+    batch_size = 26.25915971956937
+    decay = 5e-05
+    epochs = 161.04455576860923
+    lr = 0.0002087003882426109
     
     coarse_param = ['32', '16', '8', '4', '2']
     granular_param = ['400', '200', '100', '50', '25']
@@ -1393,7 +1431,8 @@ if __name__ == "__main__":
     # for coarse in coarse_param:
     #     for granular in granular_param:
     trainer = ModelTrainer(print_graphs=False,save_model=False,training_split=0.85,granular_model_size=str(25),coarse_model_size=str(16))
-    score = trainer.kfold(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate,save_name="Estimation_Results")
+    score = trainer.kfold(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate,save_name="Estimation_Results",)
+    # print(score)
             # save_data['Coarse Param'].append(coarse)
             # save_data['Granular Param'].append(granular)
             # save_data['Score'].append(score)
@@ -1406,9 +1445,9 @@ if __name__ == "__main__":
     # save_df = pd.DataFrame(data=save_data)
     # save_df.to_excel('Sensitivity_results.xlsx')
     # optimizer = BayesianOptimization(
-    #     f=trainer.train_model,
+    #     f=trainer.kfold,
     #     pbounds=pbounds,
-    #     random_state=1
+    #     random_state=1,
     # )
     
     # optimizer.maximize(
