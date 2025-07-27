@@ -62,13 +62,16 @@ class NN(nn.Module):
             nn.BatchNorm1d(256),
             nn.ReLU(),
             
-            # nn.Linear(256,325),
-            # nn.BatchNorm1d(325),
-            # nn.ReLU(),
+            nn.Linear(256,540),
+            nn.BatchNorm1d(540),
+            nn.ReLU(),
             
         )
     
     def forward(self,x):
+        x = self.net(x)
+        
+        return x
         x = self.net(x)
         
         return x
@@ -599,19 +602,19 @@ class MultimodalFullModel(nn.Module):
         
         
         granular_size_dict = {
-            256 : 540,
-            512 : 540,
-            128 : 405,
-            64 : 405,
-            32 : 405,
+            400 : 540,
+            200 : 540,
+            100 : 540,
+            50 : 540,
+            25 : 540,
         }
         
         granular_model_dict = {
-            256 : TwoFiftySixGranularImageModel(),
-            512 : FiveTwelveGranularImageModel(),
-            128 : OneTwentyEightGranularImageModel(),
-            64 : SixtyFourGranularImageModel(),
-            32 : ThirtyTwoGranularImageModel(),
+            400 : TwoFiftySixGranularImageModel(),
+            200 : TwoFiftySixGranularImageModel(),
+            100 : TwoFiftySixGranularImageModel(),
+            50 : TwoFiftySixGranularImageModel(),
+            25 : TwoFiftySixGranularImageModel(),
         }
 
         self.key_dimension = 120
@@ -623,11 +626,10 @@ class MultimodalFullModel(nn.Module):
         
         
         coarse_image_size = 240
-        parametric_data_size = 256
+        parametric_data_size = 540
         # combination_size = granular_size_dict[granular_image_dimension] + coarse_image_size + parametric_data_size
-        combination_size = granular_size_dict[granular_image_dimension] + parametric_data_size + coarse_image_size
+        combination_size = granular_size_dict[granular_image_dimension] + parametric_data_size
         self.parametric_module = NN()
-        self.coarse_module = CoarseImageModel()
         self.granular_module = granular_model_dict[granular_image_dimension]
         # self.aerial_module = granular_model_dict[256]
         self.fc1 = nn.Linear(in_features=combination_size,out_features=500)
@@ -738,8 +740,7 @@ class MultimodalFullModel(nn.Module):
             return torch.matmul(weights,value) # B 9 90
         
         
-    def forward(self,coarse_input:torch.FloatTensor,granular_input:torch.FloatTensor,parametric_input:torch.FloatTensor):
-        coarse_image_embedding = self.coarse_module(coarse_input)
+    def forward(self,granular_input:torch.FloatTensor,parametric_input:torch.FloatTensor):
         granular_image_embedding = self.granular_module(granular_input)
         # aerial_image_embedding = self.aerial_module(aerial_input)
         
@@ -756,20 +757,20 @@ class MultimodalFullModel(nn.Module):
         # granular_image_embedding = self.self_attention_granular_image_embedding(granular_image_embedding)
         # parametric_embeddings = self.self_attention_parameters(parametric_embeddings)
                 
-        combination = torch.cat(tensors=(coarse_image_embedding,granular_image_embedding,parametric_embeddings),dim=1)
+        combination = torch.cat(tensors=(granular_image_embedding,parametric_embeddings),dim=1)
         
         # combination = self.dropout(combination)
         
         combination = self.fc1(combination)
-        # output = self.relu(output)
-        # output = self.dropout(output)
-        # output = self.fc2(output)
+        output = self.relu(combination)
+        output = self.dropout(output)
+        output = self.fc2(output)
         # output = self.relu(output)
         # output = self.fc3(output)
         # output = self.relu(output)
         # output = self.fc4(output)
         
-        return combination
+        return output
     
 class MM_GNN(nn.Module):
     def __init__(self, adj_matrix:Data,granular_image_size=256):
@@ -779,18 +780,17 @@ class MM_GNN(nn.Module):
         self.edge_index = adj_matrix.edge_index
         self.edge_weight = adj_matrix.edge_weight
         # self.multi_modal_module = MultimodalFullModel(granular_image_dimension=granular_image_size)
-        self.bn1 = nn.BatchNorm1d(num_features=60)
-        self.bn2 = nn.BatchNorm1d(num_features=60)
-        self.bn3 = nn.BatchNorm1d(num_features=30)
-        self.gcn1 = GCNConv(in_channels=-1,out_channels=60,cached=True)
-        self.gcn2 = GCNConv(in_channels=60,out_channels=60,cached=True)
-        self.gcn3 = GCNConv(in_channels=60,out_channels=30,cached=True)
-        self.gcn4 = GCNConv(in_channels=30,out_channels=30,cached=True)
-        self.gcn5 = GCNConv(in_channels=30,out_channels=1,cached=True)
+        
+        self.bn1 = nn.BatchNorm1d(num_features=500)
+        self.bn2 = nn.BatchNorm1d(num_features=250)
+        self.bn3 = nn.BatchNorm1d(num_features=128)
+        self.gcn1 = GATConv(in_channels=-1,out_channels=100,heads=5,concat=True,edge_dim=1)
+        self.gcn2 = GATConv(in_channels=-1,out_channels=50, heads=5,edge_dim=1)
+        self.gcn3 = GATConv(in_channels=-1,out_channels=32,heads = 4,edge_dim=1)
+        self.gcn4 = GATConv(in_channels=-1,out_channels=8, heads = 4,edge_dim=1)
+        self.gcn5 = GATConv(in_channels=-1,out_channels=1,edge_dim=1)
         self.dropout = nn.Dropout()
-        self.relu = nn.ReLU()
-        
-        
+        self.relu = nn.ReLU()      
         
         self.relu = nn.ReLU()
     def generate_batches(self,data:list,batch_size:int,shuffle=False)->list[list]:
@@ -816,24 +816,21 @@ class MM_GNN(nn.Module):
         return self.multi_modal_module(coarse_images,granular_images,params)
     
     def forward(self,x):
-        x = self.gcn1(x=x,edge_index=self.edge_index,edge_weight=self.edge_weight,)
+        x = self.gcn1(x=x,edge_index=self.edge_index,edge_attr=self.edge_weight,)
         x = self.bn1(x)
         x = self.relu(x)
-        output_1 = x
-        x = self.gcn2(x=x,edge_index=self.edge_index,edge_weight=self.edge_weight)
+        x = self.gcn2(x=x,edge_index=self.edge_index,edge_attr=self.edge_weight)
         x = self.bn2(x)
-        x = x + output_1
         x = self.relu(x)
-        x = self.gcn3(x=x,edge_index=self.edge_index,edge_weight=self.edge_weight)
+        x = self.gcn3(x=x,edge_index=self.edge_index,edge_attr=self.edge_weight)
         x = self.bn3(x)
         x = self.relu(x)
-        output_2 = x
-        x = self.gcn4(x=x,edge_index=self.edge_index,edge_weight=self.edge_weight)
-        x = x + output_2
+        x = self.gcn4(x=x,edge_index=self.edge_index,edge_attr=self.edge_weight)
         x = self.relu(x)
-        x = self.gcn5(x,edge_index=self.edge_index,edge_weight=self.edge_weight)
+        x = self.gcn5(x,edge_index=self.edge_index,edge_attr=self.edge_weight)
         
         return x
+
 
 
 class FullDataset():
@@ -855,12 +852,12 @@ class ModelTrainer():
             granular_image_path = './data/granular images'
             excel_path = './data/excel_files/duplicates_removed.csv'
         else:
-            coarse_image_path = "/kaggle/input/coe-cnn-Experiment/coarse images"
-            granular_image_path = "/kaggle/input/coe-cnn-Experiment/granular_images"
-            excel_path = "/kaggle/input/coe-cnn-Experiment/Final_Dataset.csv"
+            coarse_image_path = "/kaggle/input/coe-cnn-experiment/coarse images"
+            granular_image_path = "/kaggle/input/coe-cnn-experiment/granular_images"
+            excel_path = "/kaggle/input/coe-cnn-experiment/Final_Dataset.csv"
         
         granular_model_training_locations = {
-            '256' : "/kaggle/input/coe-cnn-Experiment/Final_aerial_final",
+            '25' : "/kaggle/input/coe-cnn-experiment/Final_aerial_final",
             '512' : "/kaggle/input/coe-cnn-Experiment/512x512-granular-images",
             '128' : "/kaggle/input/coe-cnn-Experiment/128x128-granular-images",
             '64' : "/kaggle/input/coe-cnn-Experiment/64x64-granular-images",
@@ -883,25 +880,26 @@ class ModelTrainer():
         if coarse_model_size not in coarse_model_training_locations:
             raise Exception(f"Coarse Model must match {list(coarse_model_training_locations.keys())}")
         
-        internal_embedding_path = "/kaggle/input/coe-cnn-Experiment/Internal_embeddings_pca.csv"
+        internal_embedding_path = "/kaggle/input/coe-cnn-experiment/Internal_embeddings.csv"
         granular_image_path = granular_model_training_locations[granular_model_size]
         coarse_image_path = coarse_model_training_locations[coarse_model_size]
         self.print_graphs = print_graphs
         self.save_model = save_model
         
         # Load data
-        self.adj_matrix = self.get_adjacency_matrix(adj_matrix_path)
+        # self.adj_matrix = self.get_adjacency_matrix(adj_matrix_path)
         self.internal_embeddings_ndarray = pd.read_csv(internal_embedding_path).to_numpy(dtype=np.float32)
-        # orderings, parametric_features_df = self.get_parametric_features(excel_path)
+        orderings, parametric_features_df = self.get_parametric_features(excel_path)
+        self.parametric_features_df = parametric_features_df
         self.excel_path = excel_path
-        # granular_images_ndarray = self.convert_images_to_numpy(image_path=granular_image_path, ordering=orderings)
+        self.granular_images_ndarray = self.convert_images_to_numpy(image_path=granular_image_path, ordering=orderings)
         # coarse_images_ndarray = self.convert_images_to_numpy(image_path=coarse_image_path, ordering=orderings)
         # aerial_images_ndarray = self.convert_images_to_numpy(image_path=aerial_images_path,ordering=orderings)
         
         aawdt_ndarray = self.get_regression_values(file_path=excel_path,ordering=None)
         
         # Attach variables to object
-        self.saved_model_path = '/kaggle/input/coe-cnn-Experiment/multimodalCNN.pt'
+        self.saved_model_path = '/kaggle/input/coe-cnn-experiment/multimodalCNN_updated.pt'
         self.granular_model_size = granular_model_size
         # self.parametric_features_df = parametric_features_df
         # self.granular_images_ndarray = granular_images_ndarray
@@ -919,7 +917,7 @@ class ModelTrainer():
         params = self.preprocess_data(self.parametric_features_df)
         
         dataset = TensorDataset(
-            torch.from_numpy(self.coarse_images_ndarray).permute(0,3,1,2) / 255,
+            # torch.from_numpy(self.coarse_images_ndarray).permute(0,3,1,2) / 255,
             torch.from_numpy(self.granular_images_ndarray).permute(0,3,1,2) / 255,
             torch.from_numpy(params)
         )
@@ -928,11 +926,11 @@ class ModelTrainer():
         dataloader = DataLoader(dataset=dataset,shuffle=False,batch_size=100)
         
         model.eval()
-        for coarse, granular, param in dataloader:
-            coarse = coarse.to(device)
+        for granular, param in dataloader:
+            # coarse = coarse.to(device)
             granular = granular.to(device)
             param = param.to(device)
-            output = model(coarse,granular,param)
+            output = model(granular,param)
             
             features.append(output.detach().cpu().numpy())
         
@@ -946,7 +944,7 @@ class ModelTrainer():
         
         df = pd.DataFrame(data=features_output,columns=columns)
         
-        df.to_csv('Internal_embeddings_nn.csv',index=False)
+        df.to_csv('Internal_embeddings_200.csv',index=False)
 
     def get_adjacency_matrix(self,path:str)->Data:
         """
@@ -1188,7 +1186,7 @@ class ModelTrainer():
             time_start = time.time()
             metric = self.train_model(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_rate=annealing_rate,annealing_range=annealing_range,dataset=dataset)
             time_end = time.time()
-            print(f'Metric for fold {fold}: {metric}, training time: {time_end - time_start}')
+            # print(f'Metric for fold {fold}: {metric}, training time: {time_end - time_start}')
             results = self.get_training_featues_with_predictions()
             dataframes.append(results)
             avg_score += metric
@@ -1196,6 +1194,7 @@ class ModelTrainer():
         
         final_result = pd.concat(objs=dataframes,axis=0,ignore_index=True)
         final_result.to_excel(f"{num_fold}{save_name}{self.excel_path.split('/')[-1].split('.')[0]}.xlsx",index=False)
+        print(avg_score / num_fold)
         return (avg_score / num_fold) * -1
             
             
@@ -1219,7 +1218,6 @@ class ModelTrainer():
         
         df['AAWDT'] =  df['AAWDT'].astype(int)
         result_df = df.join(prediction_df,how='inner')
-        print(result_df.shape)
         return result_df
     
     
@@ -1435,12 +1433,12 @@ if __name__ == "__main__":
         'annealing_rate' : (0.0001,0.05)
     }
     
-    annealing_range = 105.41798231531651
-    annealing_rate = 0.048215065102947756
-    batch_size = 9.409478170935476
-    decay = 1.286002632010444e-05
-    epochs = 220.3474868342754
-    lr = 0.0009422947301485229
+    annealing_range = 242.9688059056526
+    annealing_rate = 0.05
+    batch_size = 5.0
+    decay = 0.0
+    epochs = 500.0
+    lr = 0.0001
 
     coarse_param = ['32', '16', '8', '4', '2']
     granular_param = ['256', '512', '128', '64', '32']
@@ -1461,10 +1459,10 @@ if __name__ == "__main__":
     scores = []
     # for adj_path in adj_matrix_paths:
     # adj_path = '/kaggle/input/coe-cnn-Experiment/Adjacency_Matrix_500_meters.csv'
-    adj_path = '/kaggle/input/coe-cnn-Experiment/Adjacency_Matrix_150_meters.csv' 
-    trainer = ModelTrainer(print_graphs=False,save_model=False,training_split=0.85,granular_model_size="256",coarse_model_size="8",adj_matrix_path=adj_path)
-    # trainer.generate_embeddings(apply_pca=False)
-    trainer.kfold(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate,num_fold=10,save_name="experiment")
+    adj_path = '/kaggle/input/coe-cnn-experiment/Adjacency_Matrix_150_meters.csv' 
+    trainer = ModelTrainer(print_graphs=False,save_model=False,training_split=0.85,granular_model_size="25",coarse_model_size="8",adj_matrix_path=adj_path)
+    trainer.generate_embeddings(apply_pca=False)
+    # trainer.kfold(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate,num_fold=10,save_name="experiment")
     # score = trainer.kfold(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate)
     # print(score)
         # scores.append(scores)
