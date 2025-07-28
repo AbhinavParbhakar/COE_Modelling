@@ -33,10 +33,11 @@ if "KAGGLE_KERNEL_RUN_TYPE" in os.environ:
     subprocess.check_call(install_cmd)
 
 from bayes_opt import BayesianOptimization
-from torch_geometric.nn.conv import GCNConv, GATConv
+from torch_geometric.nn.conv import GCNConv, GATConv, GATv2Conv, GCN2Conv
 from torch_geometric.data import Data
 from torch_geometric.data import Batch
 from torch_geometric.utils import k_hop_subgraph
+from torch_geometric.nn.norm import GraphNorm
 
 
 seed = 42
@@ -605,18 +606,33 @@ class MM_GNN(nn.Module):
         self.edge_weight = adj_matrix.edge_weight
         # self.multi_modal_module = MultimodalFullModel(granular_image_dimension=granular_image_size)
         
-        self.bn1 = nn.BatchNorm1d(num_features=500)
-        self.bn2 = nn.BatchNorm1d(num_features=250)
-        self.bn3 = nn.BatchNorm1d(num_features=128)
-        self.gcn1 = GATConv(in_channels=-1,out_channels=100,heads=5,concat=True,edge_dim=1)
-        self.gcn2 = GATConv(in_channels=-1,out_channels=50, heads=5,edge_dim=1)
-        self.gcn3 = GATConv(in_channels=-1,out_channels=32,heads = 4,edge_dim=1)
-        self.gcn4 = GATConv(in_channels=-1,out_channels=8, heads = 4,edge_dim=1)
+        self.ln1 = nn.LayerNorm(500)
+        self.ln2 = nn.LayerNorm(250)
+        self.ln3 = nn.LayerNorm(128)
+        
+        self.gcn1 = GATv2Conv(in_channels=-1,out_channels=100,heads=5,concat=True,residual=True,)
+        self.gcn2 = GATv2Conv(in_channels=-1,out_channels=50, heads=5,residual=True,)
+        self.gcn3 = GATv2Conv(in_channels=-1,out_channels=32,heads = 4,residual=True,)
+        self.gcn4 = GATConv(in_channels=-1,out_channels=8, heads = 4,residual=True)
+        self.gcn4_2 = GATConv(in_channels=-1,out_channels=8, heads = 4,edge_dim=1,residual=True)
+        
+        self.backbone = torch.nn.ModuleList(
+            GCN2Conv(128, alpha=0.2, theta=0.5, layer=i+1)
+            for i in range(8)
+        )
+        
+        self.fcn = nn.Sequential(
+            nn.Linear(128,64),
+            nn.ReLU(),
+            nn.Linear(64,32),
+            nn.ReLU(),
+            nn.Linear(32,1)
+        )
+
+        
         self.gcn5 = GATConv(in_channels=-1,out_channels=1,edge_dim=1)
         self.dropout = nn.Dropout()
         self.relu = nn.ReLU()      
-        
-        self.relu = nn.ReLU()
     def generate_batches(self,data:list,batch_size:int,shuffle=False)->list[list]:
         """
         Given the data as a one-dimensional ist and the batch size, generate batches of the data and return it
@@ -639,19 +655,23 @@ class MM_GNN(nn.Module):
     def mm_checkpoint(self,coarse_images,granular_images,params):
         return self.multi_modal_module(coarse_images,granular_images,params)
     
-    def forward(self,x):
-        x = self.gcn1(x=x,edge_index=self.edge_index,edge_attr=self.edge_weight,)
-        x = self.bn1(x)
+    def forward(self,x:torch.Tensor):
+        x = self.gcn1(x=x,edge_index=self.edge_index,)
+        x = self.ln1(x)
         x = self.relu(x)
-        x = self.gcn2(x=x,edge_index=self.edge_index,edge_attr=self.edge_weight)
-        x = self.bn2(x)
+        x = self.gcn2(x=x,edge_index=self.edge_index,)
+        x = self.ln2(x)
         x = self.relu(x)
-        x = self.gcn3(x=x,edge_index=self.edge_index,edge_attr=self.edge_weight)
-        x = self.bn3(x)
+        x = self.gcn3(x=x,edge_index=self.edge_index,)
+        x = self.ln3(x)
         x = self.relu(x)
-        x = self.gcn4(x=x,edge_index=self.edge_index,edge_attr=self.edge_weight)
-        x = self.relu(x)
-        x = self.gcn5(x,edge_index=self.edge_index,edge_attr=self.edge_weight)
+        # x0 = x.clone()
+        # for conv in self.backbone:
+        #     x = self.relu(conv(x, x0, self.edge_index)) 
+        # x = self.gcn4(x=x,edge_index=self.edge_index,edge_attr=self.edge_weight)
+        # x = self.relu(x)
+        x = self.fcn(x)
+        
         
         return x
 
@@ -830,6 +850,10 @@ class MultimodalFullModel(nn.Module):
         # combination = self.dropout(combination)
         
         if self.generate_embeddings:
+            # output = self.fc1(combination)
+            # output = self.relu(output)
+            # output = self.dropout(output)
+            # output = self.fc2(output)
             return combination
         else:
             output = self.fc1(combination)
@@ -863,7 +887,7 @@ class ModelTrainer():
         else:
             coarse_image_path = "/kaggle/input/coe-cnn-Experiment/coarse images"
             granular_image_path = "/kaggle/input/coe-cnn-Experiment/granular_images"
-            excel_path = "/kaggle/input/coe-cnn-experiment/Set2.csv"
+            excel_path = "/kaggle/input/coe-cnn-Experiment/Set2.csv"
             
             
         
@@ -872,21 +896,21 @@ class ModelTrainer():
             '200' : "/kaggle/input/coe-cnn-Experiment/200x200-aerial-set2",
             '100' : "/kaggle/input/coe-cnn-Experiment/100x100-aerial-set2",
             '50' : "/kaggle/input/coe-cnn-Experiment/50x50-aerial-set2",
-            '25' : "/kaggle/input/coe-cnn-experiment/straight-segments"
+            '25' : "/kaggle/input/coe-cnn-Experiment/straight-segments"
         }
 
         coarse_model_training_locations = {
             '32' : "/kaggle/input/coe-cnn-Experiment/32x32-coarse-set2",
-            '16' : "/kaggle/input/coe-cnn-experiment/16x16-coarse-set2",
+            '16' : "/kaggle/input/coe-cnn-Experiment/16x16-coarse-set2",
             '8' : "/kaggle/input/coe-cnn-Experiment/8x8-coarse-set2",
             '4' : "/kaggle/input/coe-cnn-Experiment/4x4-coarse-set2",
             '2' : "/kaggle/input/coe-cnn-Experiment/2x2-coarse-set2"
         }
         
         # aerial_images_path = "/kaggle/input/coe-cnn-Experiment/high_res_granular"
-        self.all_points_path = '/kaggle/input/coe-cnn-experiment/Final_Dataset.csv'
-        self.all_granular_path = "/kaggle/input/coe-cnn-experiment/Final_aerial_final"
-        adj_matrix_path = '/kaggle/input/coe-cnn-experiment/Adjacency_Matrix_150_meters.csv'
+        self.all_points_path = '/kaggle/input/coe-cnn-Experiment/Final_Dataset.csv'
+        self.all_granular_path = "/kaggle/input/coe-cnn-Experiment/Final_aerial_final"
+        adj_matrix_path = '/kaggle/input/coe-cnn-Experiment/Adjacency_Matrix_150_meters.csv'
         self.adj_matrix = self.get_adjacency_matrix(adj_matrix_path)
         
         if granular_model_size not in granular_model_training_locations:
@@ -1302,19 +1326,20 @@ class ModelTrainer():
         self.model = MultimodalFullModel(int(self.granular_model_size))
         self.graph_model = MM_GNN(granular_image_size=int(self.granular_model_size),adj_matrix=self.adj_matrix)
         self.model.apply(self.init_weights)
-        mm_performance,save_name,model_copy,best_preds,best_targets,best_ids = self.train(
+        
+        mm_performance,save_name,model_copy,mm_preds,best_targets,best_ids = self.train(
             model=self.model,
-            epochs=int(self.graph_hyper_params['epochs']),
-            lr=self.graph_hyper_params['lr'],
-            batch_size=int(self.graph_hyper_params['batch_size']),
-            decay=self.graph_hyper_params['decay'],
-            annealing_range=int(self.graph_hyper_params['annealing_range']),
-            annealing_rate=self.graph_hyper_params['annealing_rate'],
+            epochs=int(epochs),
+            lr=lr,
+            batch_size=int(batch_size),
+            decay=decay,
+            annealing_range=int(annealing_range),
+            annealing_rate=annealing_rate,
             train_data=self.train_dataset,
             test_data=self.test_dataset,
             create_graphs=self.print_graphs,
             early_stopping=early_stopping)
-        # print(f'Multimodal Score: ',mm_performance)
+        print(f'Multimodal Score: ',mm_performance)
         self.graph_dataset, validation_mask = self.return_graph_info(
             model=model_copy,
             csv_path=self.all_points_path,
@@ -1322,20 +1347,20 @@ class ModelTrainer():
             train_indices=train_indices,
             val_indices=test_indices
         )
-        gnn_performance,save_name,model_copy,best_preds,best_targets,indices = self.train_graph(
+        gnn_performance,save_name,model_copy,gnn_preds,best_targets,indices = self.train_graph(
             model=self.graph_model,
-            epochs=epochs,
-            lr=lr,
-            batch_size=batch_size,
-            decay=decay,
-            create_graphs=self.print_graphs,
-            annealing_range=annealing_range,
-            annealing_rate=annealing_rate,
+            epochs=int(self.graph_hyper_params['epochs']),
+            lr=self.graph_hyper_params['lr'],
+            batch_size=int(self.graph_hyper_params['batch_size']),
+            decay=self.graph_hyper_params['decay'],
+            annealing_range=int(self.graph_hyper_params['annealing_range']),
+            annealing_rate=self.graph_hyper_params['annealing_rate'],
             dataset=self.graph_dataset
         )
         
-        # print(f'GNN Module Score: ',gnn_performance)
-        self.best_preds = best_preds
+        print(f'GNN Module Score: ',gnn_performance)
+        self.mm_preds = mm_preds
+        self.gnn_preds = gnn_preds
         self.best_targets = best_targets
         self.indices = validation_mask
         if self.save_model:
@@ -1345,8 +1370,11 @@ class ModelTrainer():
     
     def get_training_featues_with_predictions(self)->pd.DataFrame:
         df = pd.read_csv(self.all_points_path)
-        column_names = ['Pred. AAWDT']
-        prediction_df = pd.DataFrame(data=self.best_preds,columns=column_names,index=self.indices)
+        data_dict = {
+            'MM Pred. AAWDT' : self.mm_preds.reshape(self.mm_preds.shape[0]),
+            'GNN Pred. AAWDT' : self.gnn_preds.reshape(self.gnn_preds.shape[0])
+        }
+        prediction_df = pd.DataFrame(data=data_dict,index=self.indices)
         
         df['AAWDT'] =  df['AAWDT'].astype(int)
         result_df = df.join(prediction_df,how='inner')
@@ -1380,6 +1408,7 @@ class ModelTrainer():
         loss_fn = torch.nn.functional.huber_loss
         optim = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=decay)
         scheduler = CosineAnnealingLR(optimizer=optim,T_max=annealing_range,eta_min=annealing_rate)
+        # scheduler = CosineAnnealingWarmRestarts(optimizer=optim,T_0=annealing_range,eta_min=annealing_rate)
                 
         train_r2_values = []
         valid_r2_values = []
@@ -1681,23 +1710,14 @@ if __name__ == "__main__":
         'annealing_rate' : (0.00001,0.05),
     }
     
-    graph_hyperparams={
-        'annealing_range' : 242.9688059056526,
-        'annealing_rate' : 0.05,
-        'batch_size' : 5.0,
-        'decay' : 0.0,
-        'epochs' : 500.0,
-        'lr' : 0.0001
-    }
+    graph_hyperparams={'lr': 0.00018320610379816857, 'epochs': 372.8215253004331, 'batch_size': 5.0, 'decay': 0.0, 'annealing_range': 206.2534216416137, 'annealing_rate': 0.05}
     
-    mm_hyper_parameters = {
-    'annealing_range' : 134.69178272757267,
-    'annealing_rate' : 0.005073508303579221,
-    'batch_size' : 26.25915971956937,
-    'decay' : 5e-05,
-    'epochs' : 161.04455576860923,
-    'lr' : 0.0002087003882426109
-    }
+    annealing_range = 134.69178272757267
+    annealing_rate = 0.005073508303579221
+    batch_size = 26.25915971956937
+    decay = 5e-05
+    epochs = 161.04455576860923
+    lr = 0.0002087003882426109
     
     coarse_param = ['32', '16', '8', '4', '2']
     granular_param = ['400', '200', '100', '50', '25']
@@ -1711,9 +1731,9 @@ if __name__ == "__main__":
     
     # for coarse in coarse_param:
     #     for granular in granular_param:
-    trainer = ModelTrainer(graph_hyper_params=mm_hyper_parameters,print_graphs=False,save_model=False,training_split=0.85,granular_model_size=str(25),coarse_model_size=str(16))
-    # score = trainer.kfold(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate,save_name="Estimation_Results",)
-    # print(score)
+    trainer = ModelTrainer(graph_hyper_params=graph_hyperparams,print_graphs=False,save_model=False,training_split=0.85,granular_model_size=str(25),coarse_model_size=str(16))
+    score = trainer.kfold(epochs=epochs,lr=lr,batch_size=batch_size,decay=decay,annealing_range=annealing_range,annealing_rate=annealing_rate,save_name="Estimation_Results",)
+    print(score)
             # save_data['Coarse Param'].append(coarse)
             # save_data['Granular Param'].append(granular)
             # save_data['Score'].append(score)
@@ -1725,17 +1745,17 @@ if __name__ == "__main__":
             
     # save_df = pd.DataFrame(data=save_data)
     # save_df.to_excel('Sensitivity_results.xlsx')
-    optimizer = BayesianOptimization(
-        f=trainer.kfold,
-        pbounds=pbounds,
-        random_state=1,
-    )
+    # optimizer = BayesianOptimization(
+    #     f=trainer.kfold,
+    #     pbounds=pbounds,
+    #     random_state=1,
+    # )
     
-    optimizer.maximize(
-        init_points = 4,
-        n_iter = 20
-    )
-    print(optimizer.max)
+    # optimizer.maximize(
+    #     init_points = 4,
+    #     n_iter = 20
+    # )
+    # print(optimizer.max)
     #grid_search(lr_ranges=lr_ranges,batch_size_ranges=batch_size_ranges,regularization_ranges=regularization_ranges,train_dataset=train_dataset,test_dataset=test_dataset,annealing_rates=annealing_rates,annealing_ranges=annealing_ranges)
     #best_rmse, best_model, save_name = train(epochs=epochs,lr=lr,batch_size=batch_size,decay=l2_decay,train_data=train_dataset,test_data=test_dataset)
     # torch.save(best_model,save_name)
